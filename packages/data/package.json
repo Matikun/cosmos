@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --coverage"
+    "test": "vitest run --coverage --exclude '**/search-timing.test.ts' && vitest run test/search-timing.test.ts"
   },
   "dependencies": {
     "@cosmos/core-types": "workspace:*"

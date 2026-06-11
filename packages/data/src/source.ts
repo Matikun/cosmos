@@ -17,10 +17,16 @@ export interface StarDataSource {
   nearestStarIndex(xPc: number, yPc: number, zPc: number): number;
 }
 
+interface NameSearchRow {
+  readonly idx: number;
+  readonly lower: string;
+}
+
 export class StarDataSourceImpl implements StarDataSource {
   readonly batch: StarBatch;
   private readonly _names: Map<number, string>; // catalogId → display name
   private readonly _idIndex: Map<number, number>; // catalogId → batch index
+  private readonly _nameSearchRows: readonly NameSearchRow[];
   private readonly _grid: SpatialGrid;
 
   constructor(batch: StarBatch, names: Record<string, string>) {
@@ -32,9 +38,16 @@ export class StarDataSourceImpl implements StarDataSource {
     }
 
     this._names = new Map();
+    const nameSearchRows: NameSearchRow[] = [];
     for (const [k, v] of Object.entries(names)) {
-      this._names.set(Number(k), v);
+      const catalogId = Number(k);
+      this._names.set(catalogId, v);
+      const idx = this._idIndex.get(catalogId);
+      if (idx !== undefined) {
+        nameSearchRows.push({ idx, lower: v.toLowerCase() });
+      }
     }
+    this._nameSearchRows = nameSearchRows;
 
     this._grid = buildGrid(batch.positionsPc, batch.count);
   }
@@ -83,27 +96,32 @@ export class StarDataSourceImpl implements StarDataSource {
       return [];
     }
 
-    const prefix: StarRecord[] = [];
-    const others: StarRecord[] = [];
+    const prefixIdx: number[] = [];
+    const otherIdx: number[] = [];
+    const { absMag } = this.batch;
 
-    for (const [catalogId, name] of this._names) {
-      const lower = name.toLowerCase();
-      if (!lower.includes(q)) continue;
-      const idx = this._idIndex.get(catalogId);
-      if (idx === undefined) continue;
-      const rec = this.getByIndex(idx);
-      if (lower.startsWith(q)) {
-        prefix.push(rec);
+    for (let i = 0; i < this._nameSearchRows.length; i++) {
+      const row = this._nameSearchRows[i]!;
+      if (!row.lower.includes(q)) continue;
+      if (row.lower.startsWith(q)) {
+        prefixIdx.push(row.idx);
       } else {
-        others.push(rec);
+        otherIdx.push(row.idx);
       }
     }
 
     // Prefix matches first, then other substring matches; within each group sort by absMag ascending (brightest first)
-    prefix.sort((a, b) => a.absMag - b.absMag);
-    others.sort((a, b) => a.absMag - b.absMag);
+    prefixIdx.sort((a, b) => absMag[a]! - absMag[b]!);
+    otherIdx.sort((a, b) => absMag[a]! - absMag[b]!);
 
-    return [...prefix, ...others].slice(0, maxResults);
+    const out: StarRecord[] = [];
+    for (let i = 0; i < prefixIdx.length && out.length < maxResults; i++) {
+      out.push(this.getByIndex(prefixIdx[i]!));
+    }
+    for (let i = 0; i < otherIdx.length && out.length < maxResults; i++) {
+      out.push(this.getByIndex(otherIdx[i]!));
+    }
+    return out;
   }
 
   queryRegion(minPc: Vec3Pc, maxPc: Vec3Pc, maxCount: number): Uint32Array {
