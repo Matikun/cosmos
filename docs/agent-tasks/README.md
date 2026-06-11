@@ -10,8 +10,13 @@ sections — they are part of the spec.
 ## How to execute a task (rules for agents)
 
 1. Pick the **lowest-numbered** task whose **Status is `pending`** and whose **Blocked-by
-   tasks are all `done`** (see the table below). Phase 0 is strictly sequential by design
-   (architecture §6) — the Blocked-by column enforces this; do not work ahead.
+   tasks are all `done`** (see the table below), skipping tasks marked `in-progress`.
+   Set your task to `in-progress` (Status cell only) as your first action in the run.
+   Phase 0 was strictly sequential; **Phase 1 runs parallel lanes** (architecture §8.3)
+   — multiple tasks may be unblocked at once, and that is intentional. Each lane
+   touches disjoint packages, so never start a task whose target package overlaps an
+   `in-progress` task. TASK-015 (integration) and TASK-017 (gate) are single-lane:
+   nothing else runs in `apps/web`/`e2e` while they are in progress.
 2. Read your task file plus its listed **Context Files**. The task file is self-contained
    for everything else. Create/modify **only** the files listed under its "Deliverables"
    heading (plus its test files).
@@ -45,20 +50,39 @@ sections — they are part of the spec.
 | [TASK-004](TASK-004-scene-host.md) | `scene-host` extraction from `apps/web` | TASK-003 | done | |
 | [TASK-005](TASK-005-nav.md) | `nav` v1: log-scaled free flight | TASK-004 | done | |
 | [TASK-006](TASK-006-phase0-gate.md) | Phase 0 gate: jitter test + 12-OOM flythrough | TASK-005 | done | closes Phase 0 |
+| [TASK-007](TASK-007-core-types-thaw.md) | `core-types` thaw: pack manifest + `StarBatch` | TASK-006 | done | unblocks lanes A–C |
+| [TASK-008](TASK-008-pack-stars.md) | `tools/pack-stars`: HYG v4.1 → `stars.bin` | TASK-007 | pending | lane A |
+| [TASK-009](TASK-009-data.md) | `data` v1: loader, search, region/nearest queries | TASK-008 | pending | lane A |
+| [TASK-010](TASK-010-render-stars.md) | `render-stars` v1: point sprites + pick helper | TASK-007 | pending | lane B |
+| [TASK-011](TASK-011-app-state.md) | `app-state` v1: selection/settings stores | TASK-007 | pending | lane C |
+| [TASK-012](TASK-012-ui.md) | `ui` v1: search palette + info panel | TASK-011 | pending | lane C (mocked adapter) |
+| [TASK-013](TASK-013-nav-goto.md) | `nav` v2: go-to-target animation | TASK-006 | pending | lane D |
+| [TASK-014](TASK-014-e2e-harness.md) | E2E harness: Playwright + baselines + bundle gate | TASK-006 | pending | lane E |
+| [TASK-015](TASK-015-m1-integration.md) | M1 integration: stars + picking + search + go-to | TASK-009, 010, 012, 013, 014 | pending | strongest agent; exclusive in `apps/web` |
+| [TASK-016](TASK-016-deploy.md) | Deploy to CDN + context-loss handling | TASK-014 | pending | lane E; human adds CF secrets |
+| [TASK-017](TASK-017-phase1-gate.md) | Phase 1 gate: rendered jitter + Lighthouse + M1 | TASK-015, 016 | pending | **GATE: closes Phase 1** |
 
-**GATE:** TASK-006 is the Phase 0 acceptance gate (architecture §6 Phase 0). No Phase 1
-task may be specced or started until TASK-006 is `done` — the `coords` public API freezes
-at that point, and only then is parallel agent work safe (architecture §8.3).
+**GATE:** TASK-017 is the Phase 1 acceptance gate (architecture §6 Phase 1 / M1). No
+Phase 2 task may be specced or started until TASK-017 is `done` — at that point the
+public APIs of `data`, `render-stars`, `app-state`, `ui`, and `nav` v2 freeze.
 
 ## Dependency graph
 
 ```
-TASK-001 → TASK-002 → TASK-003 → TASK-004 → TASK-005 → TASK-006 (GATE: closes Phase 0)
-  (done)   core-types    coords    scene-host     nav      jitter + flythrough
-```
+Phase 0 (done):
+TASK-001 → TASK-002 → TASK-003 → TASK-004 → TASK-005 → TASK-006 (gate, done)
 
-Phase 0 has no parallel lanes on purpose: every package here is on the critical path or
-directly downstream of `coords`. Parallelization begins in Phase 1 (lanes per §8.3).
+Phase 1 (parallel lanes per §8.3 — disjoint packages, conflicts impossible):
+TASK-006 ─→ TASK-007 (core-types thaw, S)
+              ├─ lane A: TASK-008 pack-stars ─→ TASK-009 data
+              ├─ lane B: TASK-010 render-stars
+              └─ lane C: TASK-011 app-state ─→ TASK-012 ui (mocked adapter)
+TASK-006 ─→ lane D: TASK-013 nav go-to
+TASK-006 ─→ lane E: TASK-014 e2e harness ─→ TASK-016 deploy + context-loss
+
+TASK-009 + 010 + 012 + 013 + 014 ─→ TASK-015 M1 integration (exclusive)
+TASK-015 + 016 ─────────────────→ TASK-017 (GATE: closes Phase 1)
+```
 
 ## Status values
 
