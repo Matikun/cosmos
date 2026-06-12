@@ -17,6 +17,12 @@ export interface StarRecord {
   readonly seed?: number;
 }
 
+/** Saturn-style ring annulus. Radii from the planet center, km. */
+export interface RingSpec {
+  readonly innerRadiusKm: number;
+  readonly outerRadiusKm: number;
+}
+
 export interface PlanetRecord {
   readonly id: BodyId;
   readonly kind: 'planet';
@@ -28,6 +34,20 @@ export interface PlanetRecord {
   /** Absent ⇒ procedural fallback per §5.7 missing-data rules (documented there). */
   readonly elements?: KeplerElements;
   readonly seed?: number;
+  /** Sidereal rotation period, HOURS. Negative = retrograde. */
+  readonly rotationPeriodH?: number;
+  /** Axial tilt (obliquity to its orbit), radians. */
+  readonly axialTiltRad?: number;
+  /** URLs relative to the pack manifest's location. KTX2 (§9, §11). */
+  readonly textures?: {
+    readonly albedoUrl?: string;
+    readonly ringUrl?: string;
+  };
+  readonly ring?: RingSpec;
+  /** Flat fallback color, LINEAR RGB in [0,1] — used when no albedo texture. */
+  readonly surfaceColorLinear?: readonly [number, number, number];
+  /** Render as self-luminous (no terminator). Used for the Sol disc. */
+  readonly unlit?: boolean;
 }
 
 export interface GalaxyRecord {
