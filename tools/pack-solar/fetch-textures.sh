@@ -80,7 +80,13 @@ for row in "${MAPPINGS[@]}"; do
   read -r name src ext <<<"$row"
   echo "==> $name  (source: 2k_${src}.${ext})"
   srcpath="$(obtain_source "$src" "$ext")"
-  toktx --t2 --encode etc1s --clevel 4 --qlevel 128 --genmipmap \
+  # ETC1S/UASTC compress in 4×4 blocks, so both dimensions must be multiples of
+  # four (and the mip chain stays clean if they're powers of two). The SSS ring
+  # strip ships as 2048×125 — force it to 2048×128 or the GPU rejects the upload
+  # (GL_INVALID_OPERATION on glTexStorage2D / glCompressedTexSubImage2D).
+  resize=""
+  [[ "$name" == "saturn_ring" ]] && resize="--resize 2048x128"
+  toktx --t2 --encode etc1s --clevel 4 --qlevel 128 --genmipmap $resize \
     "$OUT_DIR/${name}.ktx2" "$srcpath"
   count=$((count + 1))
 done
