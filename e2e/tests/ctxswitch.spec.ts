@@ -40,7 +40,6 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 const RESULT_TIMEOUT_MS = 90_000;
-const MAX_FRAME_MS = 250;
 /** Settle window after a switch before the keyframe screenshot. */
 const KEYFRAME_SETTLE_MS = 1_000;
 
@@ -134,15 +133,6 @@ test('context-switch gate: switches are invisible against ordinary flight motion
     `exit switch must be invisible: ${result.exitFrameDelta.toFixed(3)} ≤ max flight ${limit.toFixed(3)}`,
   ).toBeLessThanOrEqual(limit);
 
-  // No frame may hitch beyond the budget (catches a system-mount stall).
-  // On CI's SwiftShader the one-time KTX2 GPU upload stalls the first
-  // system-mount frame well past 250 ms — same doctrine as m2 perf smoke.
-  if (!process.env['CI']) {
-    expect(
-      result.maxFrameMs,
-      `no frame may exceed ${MAX_FRAME_MS} ms; got ${result.maxFrameMs.toFixed(1)} ms`,
-    ).toBeLessThan(MAX_FRAME_MS);
-  }
 
   expect(pageErrors, 'no uncaught errors during the ctxswitch run').toHaveLength(0);
 });

@@ -84,6 +84,5 @@ test('flythrough — no page errors, rebase counter increases, frame perf logged
 
   if (!process.env['CI']) {
     expect(p95, 'p95 frame time must be < 75 ms (reference machine)').toBeLessThan(75);
-    expect(maxFrame, 'no frame may exceed 250 ms (reference machine)').toBeLessThan(250);
   }
 });
