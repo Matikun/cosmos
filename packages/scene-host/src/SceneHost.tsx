@@ -92,16 +92,6 @@ export function attachContextLossListener(
   return () => canvas.removeEventListener('webglcontextlost', handler);
 }
 
-/** Wires the context-loss listener from inside the Canvas using useThree. */
-function ContextLossWatcher({ onContextLost }: { onContextLost: () => void }): null {
-  const gl = useThree((s) => s.gl);
-  useEffect(
-    () => attachContextLossListener(gl.domElement, onContextLost),
-    [gl.domElement, onContextLost],
-  );
-  return null;
-}
-
 /** Owns the only `<Canvas>`. Renderer config is THIS package's responsibility. */
 export function SceneHost({
   children,
@@ -109,12 +99,19 @@ export function SceneHost({
   onContextLost,
   epochProvider,
 }: SceneHostProps): React.JSX.Element {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (!onContextLost || !canvasRef.current) return;
+    return attachContextLossListener(canvasRef.current, onContextLost);
+  }, [onContextLost]);
+
   return (
     <Canvas
+      ref={canvasRef}
       gl={{ logarithmicDepthBuffer: true, antialias: false }}
       camera={{ position: [0, 0, 50], near: 0.1, far: 1e9, fov: 60 }}
     >
-      {onContextLost ? <ContextLossWatcher onContextLost={onContextLost} /> : null}
       <FrameLoopRoot
         {...(onFrame !== undefined ? { onFrame } : {})}
         {...(epochProvider !== undefined ? { epochProvider } : {})}
