@@ -1,6 +1,7 @@
 # Task: `tools/pack-octree` — catalog → Morton-keyed octree tiles + manifest
 
 **ID:** TASK-034
+**Status:** DONE
 **Target package:** `tools/pack-octree` (new) + committed sample pack in `apps/web/public/`
 **Size:** M
 **Phase:** 3 — lane (data tools; the second of the two chunk producers `streaming` needs)
