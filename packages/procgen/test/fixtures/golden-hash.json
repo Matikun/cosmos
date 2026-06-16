@@ -1,0 +1,5 @@
+{
+  "comment": "SHA-256 of generateGalaxy({seed:1, starCount:1000}).buffer. Regenerate ONLY via a reviewed task — a change here means the galaxy math changed (ADR-004).",
+  "params": { "seed": 1, "starCount": 1000 },
+  "sha256": "e51779d5f103f25fda78888cf6c06416b4a0fa8a072109021b23055e7c218f3f"
+}
