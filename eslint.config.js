@@ -127,6 +127,28 @@ export default tseslint.config(
     },
   },
   {
+    // §5.8: streaming orchestrates but does not render or use the DOM tree —
+    // no Three.js, no React.
+    files: ['packages/streaming/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'three', message: 'packages/streaming must not import Three.js (§5.8: it does not render).' },
+            { name: 'react', message: 'packages/streaming must not import React.' },
+          ],
+          patterns: [
+            {
+              group: ['@cosmos/*/src/*'],
+              message: 'Deep imports banned: use the package public API (index.ts).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // §5.13: workers must not import Three.js, React, procgen, or data
     files: ['packages/workers/**'],
     rules: {

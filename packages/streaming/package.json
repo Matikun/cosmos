@@ -1,0 +1,23 @@
+{
+  "name": "@cosmos/streaming",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@cosmos/core-types": "workspace:*",
+    "@cosmos/coords": "workspace:*",
+    "@cosmos/data": "workspace:*",
+    "@cosmos/workers": "workspace:*"
+  },
+  "devDependencies": {
+    "@cosmos/procgen": "workspace:*"
+  }
+}

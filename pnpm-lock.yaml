@@ -288,6 +288,25 @@ importers:
         specifier: workspace:*
         version: link:../core-types
 
+  packages/streaming:
+    dependencies:
+      '@cosmos/coords':
+        specifier: workspace:*
+        version: link:../coords
+      '@cosmos/core-types':
+        specifier: workspace:*
+        version: link:../core-types
+      '@cosmos/data':
+        specifier: workspace:*
+        version: link:../data
+      '@cosmos/workers':
+        specifier: workspace:*
+        version: link:../workers
+    devDependencies:
+      '@cosmos/procgen':
+        specifier: workspace:*
+        version: link:../procgen
+
   packages/ui:
     dependencies:
       '@cosmos/app-state':
