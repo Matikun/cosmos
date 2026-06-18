@@ -1,14 +1,16 @@
-// Fragment shader for dust-lane billboards.
-// Samples the alpha dust texture. Blending mode is MultiplyBlending so the
-// dust darkens (occludes) the additive star cloud behind it — not additive.
+// Fragment shader for spiral-arm glow billboards (dust lanes / HII regions).
+// Blending is AdditiveBlending, so each billboard ADDS a soft glow over the
+// star cloud. uGlowColor selects the tint (cool blue for arm hints, magenta
+// for HII knots). uOpacity rides in alpha and fades/hides the layer cleanly.
 export const FRAG = /* glsl */ `
 uniform sampler2D uDustTexture;
 uniform float uOpacity;
+uniform vec3 uGlowColor;
 
 varying vec2 vUv;
 
 void main() {
-  vec4 tex = texture2D(uDustTexture, vUv);
-  gl_FragColor = vec4(tex.rgb, tex.a * uOpacity);
+  float coverage = texture2D(uDustTexture, vUv).a;
+  gl_FragColor = vec4(uGlowColor, coverage * uOpacity);
 }
 `;

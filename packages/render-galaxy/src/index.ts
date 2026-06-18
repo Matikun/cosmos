@@ -1,5 +1,5 @@
 export { createGalaxyPoints } from './galaxy-points.js';
-export type { GalaxyPoints, GalaxyPointsOptions } from './galaxy-points.js';
+export type { GalaxyPoints, GalaxyPointsOptions, GalaxyArmGeometry } from './galaxy-points.js';
 
 export { createDustLanes } from './dust-lanes.js';
 export type { DustLanes, DustLanesOptions } from './dust-lanes.js';

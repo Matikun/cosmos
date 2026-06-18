@@ -98,6 +98,25 @@ describe('shader strings', () => {
     expect(FRAG).toContain('uOpacity');
   });
 
+  it('vertex shader forwards galactic radius and azimuth for population tint + dust', () => {
+    expect(VERT).toContain('vRadiusPc');
+    expect(VERT).toContain('vPhi');
+    expect(VERT).toContain('length(position.xy)');
+    expect(VERT).toContain('atan(position.y, position.x)');
+  });
+
+  it('fragment shader applies warm-bulge / cool-disc population tint', () => {
+    expect(FRAG).toContain('WARM_BULGE');
+    expect(FRAG).toContain('COOL_DISC');
+    expect(FRAG).toContain('vRadiusPc');
+  });
+
+  it('fragment shader darkens stars on the inner dust-lane flank (ADR-004)', () => {
+    expect(FRAG).toContain('dustLaneFactor');
+    expect(FRAG).toContain('uDustStrength');
+    expect(FRAG).toContain('vPhi');
+  });
+
   it('fragment shader contains -0.4 brightness exponent', () => {
     expect(FRAG).toContain('-0.4');
   });

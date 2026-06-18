@@ -15,9 +15,13 @@ attribute float aColorBV;
 
 varying float vApparentMag;
 varying float vBV;
+varying float vRadiusPc;
+varying float vPhi;
 
 void main() {
   vec3 viewPos = mat3(viewMatrix) * (position + uRenderOffset);
+  vRadiusPc = length(position.xy);
+  vPhi = atan(position.y, position.x);
   float dPc = max(length(viewPos), 0.001);
   float m = aAbsMag + 5.0 * (log2(dPc) / log2(10.0) - 1.0);
   gl_PointSize = clamp(

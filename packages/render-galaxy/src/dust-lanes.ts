@@ -6,6 +6,8 @@ export interface DustLanesOptions {
   readonly centersUnits: Float32Array;
   readonly radiiUnits: Float32Array;
   readonly dustTexture: THREE.Texture;
+  /** Additive glow rgb; default cool-blue arm tint. */
+  readonly glowColor?: readonly [number, number, number];
 }
 
 export interface DustLanes {
@@ -17,7 +19,7 @@ export interface DustLanes {
 }
 
 export function createDustLanes(opts: DustLanesOptions): DustLanes {
-  const { centersUnits, radiiUnits, dustTexture } = opts;
+  const { centersUnits, radiiUnits, dustTexture, glowColor = [0.55, 0.68, 1.0] } = opts;
   const count = radiiUnits.length;
 
   // Unit quad; billboard expansion happens in the vertex shader.
@@ -30,19 +32,21 @@ export function createDustLanes(opts: DustLanesOptions): DustLanes {
     uRenderOffset: { value: new THREE.Vector3(0, 0, 0) },
     uDustTexture: { value: dustTexture },
     uOpacity: { value: 1.0 },
+    uGlowColor: { value: new THREE.Vector3(...glowColor) },
   };
 
-  // MultiplyBlending: result = src * dst — darkens the additive star cloud
-  // behind the dust (§5.9 doctrine: dust occludes, does not add). Three.js
-  // requires premultipliedAlpha for MultiplyBlending (else it emits a per-frame
-  // WebGLState error and the blend is undefined).
+  // AdditiveBlending: each billboard adds a soft cool-blue glow tracing the
+  // spiral arms (the dominant "this is a spiral galaxy" cue). Occlusion
+  // (MultiplyBlending) was tried but is invisible over the sparse point cloud —
+  // multiplying the black gaps between stars stays black, so it could only dim
+  // the dense core, never define the arms. uOpacity rides in the fragment alpha
+  // (additive scales the contribution by src.a), so the layer fades/hides cleanly.
   const material = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: VERT,
     fragmentShader: FRAG,
     transparent: true,
-    blending: THREE.MultiplyBlending,
-    premultipliedAlpha: true,
+    blending: THREE.AdditiveBlending,
     depthWrite: false,
     side: THREE.DoubleSide,
   });

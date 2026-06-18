@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { createDustLanes } from '../src/dust-lanes.js';
+import { FRAG as DUST_FRAG } from '../src/shaders/dust.frag.glsl.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,20 +66,34 @@ describe('material flags', () => {
     expect(mat.depthWrite).toBe(false);
   });
 
-  it('blending is NOT plain AdditiveBlending (dust must darken)', () => {
-    expect(mat.blending).not.toBe(THREE.AdditiveBlending);
-  });
-
-  it('blending is MultiplyBlending', () => {
-    expect(mat.blending).toBe(THREE.MultiplyBlending);
+  it('blending is AdditiveBlending (arm glow adds light, traces the spiral arms)', () => {
+    expect(mat.blending).toBe(THREE.AdditiveBlending);
   });
 
   it('transparent = true', () => {
     expect(mat.transparent).toBe(true);
   });
+});
 
-  it('premultipliedAlpha = true (required by MultiplyBlending)', () => {
-    expect(mat.premultipliedAlpha).toBe(true);
+// ---------------------------------------------------------------------------
+// Fragment shader — additive arm glow scaled by uOpacity through the alpha
+// channel. AdditiveBlending's equation is result = dst + src.rgb · src.a, so
+// uOpacity must reach the alpha term for setOpacity to fade/hide the layer.
+// (The original `vec4(tex.rgb, tex.a * uOpacity)` was MultiplyBlending, which
+// ignores alpha — making setOpacity a no-op; hence this layer is now additive.)
+// ---------------------------------------------------------------------------
+
+describe('dust fragment shader opacity', () => {
+  it('scales the fragment alpha by uOpacity (so additive blend fades with opacity)', () => {
+    expect(DUST_FRAG).toMatch(/gl_FragColor\s*=\s*vec4\([^;]*\*\s*uOpacity\s*\)/);
+  });
+
+  it('uses uGlowColor for additive tint (arms, HII knots)', () => {
+    expect(DUST_FRAG).toContain('uGlowColor');
+  });
+
+  it('does not hard-code a single arm colour constant', () => {
+    expect(DUST_FRAG).not.toMatch(/const vec3 ARM_COLOR/);
   });
 });
 

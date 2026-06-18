@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { StarBatch } from '@cosmos/core-types';
+import { PROCGEN_GALAXY_DEFAULTS } from '@cosmos/core-types';
 import { buildBlackbodyLutData, LUT_SIZE } from './lut.js';
 import { VERT } from './shaders/galaxy.vert.glsl.js';
 import { FRAG } from './shaders/galaxy.frag.glsl.js';
@@ -9,6 +10,17 @@ export interface GalaxyPointsOptions {
   readonly minPointPx?: number;
   readonly maxPointPx?: number;
   readonly basePointPx?: number;
+  /** ADR-004 arm geometry for shader-side dust-lane darkening (defaults match procgen). */
+  readonly armGeometry?: GalaxyArmGeometry;
+}
+
+export interface GalaxyArmGeometry {
+  readonly scaleLengthPc: number;
+  readonly armCount: number;
+  readonly armPitchRad: number;
+  readonly armWindings: number;
+  readonly armWidthPc: number;
+  readonly dustStrength?: number;
 }
 
 export interface GalaxyPoints {
@@ -23,6 +35,15 @@ export interface GalaxyPoints {
 
 export function createGalaxyPoints(opts: GalaxyPointsOptions): GalaxyPoints {
   const { batch, minPointPx = 1, maxPointPx = 32, basePointPx = 4 } = opts;
+  const d = PROCGEN_GALAXY_DEFAULTS;
+  const arm = opts.armGeometry ?? {
+    scaleLengthPc: d.discScaleLengthPc,
+    armCount: d.armCount,
+    armPitchRad: d.armPitchRad,
+    armWindings: d.armWindings,
+    armWidthPc: d.armWidthPc,
+    dustStrength: 0.45,
+  };
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(batch.positionsPc, 3));
@@ -42,6 +63,12 @@ export function createGalaxyPoints(opts: GalaxyPointsOptions): GalaxyPoints {
     uExposure: { value: 1.0 },
     uOpacity: { value: 1.0 },
     uBvLut: { value: lut },
+    uScaleLengthPc: { value: arm.scaleLengthPc },
+    uArmCount: { value: arm.armCount },
+    uArmPitchRad: { value: arm.armPitchRad },
+    uArmWindings: { value: arm.armWindings },
+    uArmWidthPc: { value: arm.armWidthPc },
+    uDustStrength: { value: arm.dustStrength ?? 0.45 },
   };
 
   const material = new THREE.ShaderMaterial({
