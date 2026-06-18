@@ -2,7 +2,12 @@ import { createSimClock, type SimClock } from '@cosmos/sim-time';
 import { createEventBus, type EventBus } from '@cosmos/core-types';
 import { useTimeStore } from '@cosmos/app-state';
 import type { EpochProvider } from '@cosmos/scene-host';
-import { controllerHolder, mirrorControllerState, testHook } from './test-hook';
+import {
+  controllerHolder,
+  mirrorControllerState,
+  mirrorStreamingStats,
+  testHook,
+} from './test-hook';
 
 /**
  * Module-scoped simulation clock (TASK-029 fixed wiring). One instance for the
@@ -59,6 +64,7 @@ export function installTimeGlue(): void {
     }
     testHook.epochJD = clock.epochJD;
     if (controllerHolder.current) mirrorControllerState();
+    mirrorStreamingStats();
   }, 250);
 }
 

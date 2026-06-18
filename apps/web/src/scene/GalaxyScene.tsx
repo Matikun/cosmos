@@ -1,0 +1,328 @@
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useThree } from '@react-three/fiber';
+import type * as THREE from 'three';
+import type { ChunkKind, ContextId, StarBatch } from '@cosmos/core-types';
+import type { OriginManager } from '@cosmos/coords';
+import type { FlightController } from '@cosmos/nav';
+import type { StreamingPolicy } from '@cosmos/streaming';
+import { useSettingsStore } from '@cosmos/app-state';
+import { createStarPoints, type StarPoints } from '@cosmos/render-stars';
+import {
+  createGalaxyPoints,
+  createDustLanes,
+  createGalaxyImpostor,
+  type GalaxyPoints,
+  type DustLanes,
+  type GalaxyImpostor,
+} from '@cosmos/render-galaxy';
+import { PRIORITY_RENDER, PRIORITY_STREAMING, useFrameContext } from '@cosmos/scene-host';
+import {
+  createDustTexture,
+  createImpostorTexture,
+  buildDustLanes,
+} from '../glue/galaxy-assets';
+
+/**
+ * Galaxy / streaming render tier (TASK-040, §5.8/§5.9). Subscribes to the policy's
+ * lifecycle registry and mounts ready batches: octree HYG tiles via render-stars
+ * point machinery (they are real stars), the procedural Milky Way via render-galaxy
+ * (particle cloud + dust lanes + far-LOD impostor). React owns only the rare
+ * mount/unmount (event-driven state); per-frame offsets + cross-fade opacities flow
+ * imperatively with zero allocations (§2.2, §9).
+ *
+ * ## Tier hand-off (composition decision, see TASK-040 notes)
+ * The M2 star field + system scene are the galaxy/system representation and must
+ * stay visually identical (m2 baselines). So this streaming tier renders only while
+ * the camera is in the `universe` context, cross-fading to nothing across the
+ * universe⇄galaxy boundary — by which point M2's always-mounted HYG field (which
+ * grows continuously from a sub-pixel dot) owns the screen. No blank frame results
+ * because that field is never absent. The policy still `update()`s every frame
+ * (budgets/stats) regardless of this visual gate.
+ */
+
+// Discrete-LOD blend window for the procgen Milky Way: at fine LOD (near, low
+// level) the particle cloud is fully shown; at coarse LOD (far, high level) the
+// impostor takes over. Cross-fade between, ~per §5.8.
+const LOD_CLOUD_FULL = 2;
+const LOD_IMPOSTOR_FULL = 6;
+
+// Galaxy-context layer fade (parsecs from the Milky Way centre): full above HI,
+// gone below LO — the descent hands off to the M2 HYG field inside the disc.
+const GAL_FADE_LO_PC = 15_000;
+const GAL_FADE_HI_PC = 40_000;
+
+function smoothstep(lo: number, hi: number, x: number): number {
+  if (hi <= lo) return x >= hi ? 1 : 0;
+  const t = Math.max(0, Math.min(1, (x - lo) / (hi - lo)));
+  return t * t * (3 - 2 * t);
+}
+
+interface Mount {
+  readonly chunkId: string;
+  readonly kind: ChunkKind;
+  readonly context: ContextId;
+  readonly originPc: readonly [number, number, number];
+  readonly batch: StarBatch;
+  readonly objects: readonly THREE.Object3D[];
+  /** Last frame this mount was on the visible cut (hide stale mounts each frame). */
+  seen: number;
+  applyFrame(offset: readonly [number, number, number], opacity: number, lod: number): void;
+  setViewportHeight(px: number): void;
+  setExposure(exposure: number): void;
+  hide(): void;
+  dispose(): void;
+}
+
+function makeOctreeMount(
+  chunkId: string,
+  batch: StarBatch,
+  viewportPx: number,
+  exposure: number,
+): Mount {
+  const points: StarPoints = createStarPoints({ batch });
+  points.object.frustumCulled = false;
+  points.setViewportHeight(viewportPx);
+  points.setExposure(exposure);
+  return {
+    chunkId,
+    kind: 'octree',
+    context: 'galaxy',
+    originPc: batch.originPc,
+    batch,
+    objects: [points.object],
+    seen: 0,
+    applyFrame(offset, opacity): void {
+      points.setRenderOffset(offset);
+      points.setOpacity(opacity);
+    },
+    setViewportHeight: (px) => points.setViewportHeight(px),
+    setExposure: (e) => points.setExposure(e),
+    hide: () => points.setOpacity(0),
+    dispose: () => points.dispose(),
+  };
+}
+
+function makeProcgenMount(
+  chunkId: string,
+  batch: StarBatch,
+  viewportPx: number,
+  exposure: number,
+  dustTexture: THREE.Texture,
+  impostorTexture: THREE.Texture,
+  dust: { centersUnits: Float32Array; radiiUnits: Float32Array },
+  impostorRadiusUnits: number,
+): Mount {
+  const cloud: GalaxyPoints = createGalaxyPoints({ batch });
+  cloud.object.frustumCulled = false;
+  cloud.setViewportHeight(viewportPx);
+  cloud.setExposure(exposure);
+  const lanes: DustLanes = createDustLanes({
+    centersUnits: dust.centersUnits,
+    radiiUnits: dust.radiiUnits,
+    dustTexture,
+  });
+  lanes.object.frustumCulled = false;
+  const impostor: GalaxyImpostor = createGalaxyImpostor({
+    spriteTexture: impostorTexture,
+    radiusUnits: impostorRadiusUnits,
+  });
+  impostor.object.frustumCulled = false;
+
+  return {
+    chunkId,
+    kind: 'procgen',
+    context: 'galaxy',
+    originPc: batch.originPc,
+    batch,
+    objects: [impostor.object, lanes.object, cloud.object],
+    seen: 0,
+    applyFrame(offset, opacity, lod): void {
+      // Cloud at fine LOD, impostor at coarse LOD; cross-fade between.
+      const cloudFactor = smoothstep(LOD_IMPOSTOR_FULL, LOD_CLOUD_FULL, lod);
+      cloud.setRenderOffset(offset);
+      cloud.setOpacity(opacity * cloudFactor);
+      lanes.setRenderOffset(offset);
+      lanes.setOpacity(opacity * cloudFactor);
+      impostor.setRenderOffset(offset);
+      impostor.setOpacity(opacity * (1 - cloudFactor));
+    },
+    setViewportHeight: (px) => cloud.setViewportHeight(px),
+    setExposure: (e) => cloud.setExposure(e),
+    hide(): void {
+      cloud.setOpacity(0);
+      lanes.setOpacity(0);
+      impostor.setOpacity(0);
+    },
+    dispose(): void {
+      cloud.dispose();
+      lanes.dispose();
+      impostor.dispose();
+    },
+  };
+}
+
+interface GalaxySceneProps {
+  readonly streaming: StreamingPolicy;
+  readonly origin: OriginManager;
+  readonly controllerRef: RefObject<FlightController | null>;
+  /** Impostor sprite radius in galaxy units (pc) — the Milky Way's visual extent. */
+  readonly milkyWayRadiusPc: number;
+}
+
+// Module-scoped scratch — no allocations inside the frame callback (§9).
+const posScratch: { context: ContextId; local: [number, number, number] } = {
+  context: 'galaxy',
+  local: [0, 0, 0],
+};
+const offScratch: [number, number, number] = [0, 0, 0];
+
+export function GalaxyScene({
+  streaming,
+  origin,
+  controllerRef,
+  milkyWayRadiusPc,
+}: GalaxySceneProps) {
+  const size = useThree((s) => s.size);
+  const dpr = useThree((s) => s.viewport.dpr);
+
+  // Caller-owned galaxy assets (render-galaxy injects none): built once.
+  const assets = useMemo(
+    () => ({
+      dustTexture: createDustTexture(),
+      impostorTexture: createImpostorTexture(),
+      dustLanes: buildDustLanes(),
+    }),
+    [],
+  );
+  useEffect(
+    () => () => {
+      assets.dustTexture.dispose();
+      assets.impostorTexture.dispose();
+    },
+    [assets],
+  );
+
+  // Mount registry: a ref Map (driven by lifecycle events) + a parallel list for
+  // zero-alloc per-frame iteration. `version` bumps only on mount/unmount so React
+  // re-renders the <primitive> set; it never changes per frame.
+  const mounts = useRef<Map<string, Mount>>(new Map());
+  const mountList = useRef<Mount[]>([]);
+  const [version, setVersion] = useState(0);
+  const frameTick = useRef(0);
+
+  // Stable refs to the latest viewport/exposure so the event-driven mount factory
+  // can initialise new mounts without re-subscribing the lifecycle listener.
+  const viewportPx = useRef(size.height * dpr);
+  const exposure = useRef(useSettingsStore.getState().exposure);
+
+  useEffect(() => {
+    const addMount = (chunkId: string, kind: ChunkKind, batch: StarBatch): void => {
+      if (mounts.current.has(chunkId)) return;
+      const m =
+        kind === 'octree'
+          ? makeOctreeMount(chunkId, batch, viewportPx.current, exposure.current)
+          : makeProcgenMount(
+              chunkId,
+              batch,
+              viewportPx.current,
+              exposure.current,
+              assets.dustTexture,
+              assets.impostorTexture,
+              assets.dustLanes,
+              milkyWayRadiusPc,
+            );
+      m.hide(); // start invisible; the frame loop fades it in via the cut opacity.
+      mounts.current.set(chunkId, m);
+      mountList.current.push(m);
+      setVersion((v) => v + 1);
+    };
+    const removeMount = (chunkId: string): void => {
+      const m = mounts.current.get(chunkId);
+      if (!m) return;
+      mounts.current.delete(chunkId);
+      const i = mountList.current.indexOf(m);
+      if (i >= 0) mountList.current.splice(i, 1);
+      m.dispose();
+      setVersion((v) => v + 1);
+    };
+
+    const unsub = streaming.onChunk((e) => {
+      if (e.phase === 'ready' && e.batch !== null) addMount(e.chunkId, e.kind, e.batch);
+      else if (e.phase === 'evict') removeMount(e.chunkId);
+    });
+    return () => {
+      unsub();
+      for (const m of mountList.current) m.dispose();
+      mountList.current = [];
+      mounts.current.clear();
+    };
+  }, [streaming, assets, milkyWayRadiusPc]);
+
+  // Viewport height → all mounts (and remember for future mounts).
+  useEffect(() => {
+    const h = size.height * dpr;
+    viewportPx.current = h;
+    for (const m of mountList.current) m.setViewportHeight(h);
+  }, [size.height, dpr, version]);
+
+  // Exposure: transient store subscription — never a React re-render.
+  useEffect(() => {
+    const apply = (e: number): void => {
+      exposure.current = e;
+      for (const m of mountList.current) m.setExposure(e);
+    };
+    apply(useSettingsStore.getState().exposure);
+    return useSettingsStore.subscribe((s) => apply(s.exposure));
+  }, []);
+
+  // §5.8 brain: the visible cut / fetch / evict decisions, on the main thread,
+  // BEFORE render. dtMs is the clamped wall delta from the frame context.
+  useFrameContext((ctx) => {
+    streaming.update(size.height * dpr, ctx.dtMs);
+  }, PRIORITY_STREAMING);
+
+  useFrameContext(() => {
+    const tick = ++frameTick.current;
+    const ctrl = controllerRef.current;
+    const ctx: ContextId = ctrl ? ctrl.contextId : origin.context;
+
+    // Layer fade: streaming tier visible only in universe, fading across the
+    // boundary; inert in galaxy/system so the M2 view is unchanged.
+    let layerFade = 0;
+    if (ctx === 'universe') {
+      layerFade = 1;
+    } else if (ctx === 'galaxy' && ctrl) {
+      const p = ctrl.state.position.local;
+      layerFade = smoothstep(GAL_FADE_LO_PC, GAL_FADE_HI_PC, Math.hypot(p[0], p[1], p[2]));
+    }
+
+    const visible = streaming.visible;
+    if (layerFade > 0) {
+      for (let i = 0; i < visible.length; i++) {
+        const v = visible[i]!;
+        const m = mounts.current.get(v.chunkId);
+        if (m === undefined) continue;
+        m.seen = tick;
+        posScratch.context = m.context;
+        posScratch.local[0] = m.originPc[0];
+        posScratch.local[1] = m.originPc[1];
+        posScratch.local[2] = m.originPc[2];
+        origin.toRenderSpace(posScratch, offScratch);
+        m.applyFrame(offScratch, v.opacity * layerFade, v.lod);
+      }
+    }
+    // Hide any mount not on the visible cut this frame (or whole layer faded out).
+    const list = mountList.current;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i]!.seen !== tick) list[i]!.hide();
+    }
+  }, PRIORITY_RENDER);
+
+  return (
+    <>
+      {mountList.current.flatMap((m) =>
+        m.objects.map((o, i) => <primitive key={`${m.chunkId}:${i}`} object={o} />),
+      )}
+    </>
+  );
+}

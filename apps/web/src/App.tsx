@@ -4,26 +4,34 @@ import { createOriginManager, createScaleFrameTree } from '@cosmos/coords';
 import {
   loadStarPack,
   loadSystemsPack,
+  loadOctreePack,
   createCombinedSource,
   type StarDataSource,
   type SystemsSource,
   type CombinedSource,
+  type OctreeSource,
 } from '@cosmos/data';
 import type { FlightController, ContextSwitchEvent } from '@cosmos/nav';
-import { SceneHost } from '@cosmos/scene-host';
+import { SceneHost, type QualityController } from '@cosmos/scene-host';
+import type { StreamingPolicy } from '@cosmos/streaming';
 import { useSelectionStore, useHistoryStore, useHudStore } from '@cosmos/app-state';
 import { Icon } from '@cosmos/ui';
 import { INITIAL_CAMERA, NavDriver } from './scene/NavDriver';
 import { StarScene } from './scene/StarScene';
 import { SystemScene } from './scene/SystemScene';
+import { GalaxyScene } from './scene/GalaxyScene';
 import { Hud } from './hud/Hud';
 import { DebugHud } from './scene/DebugHud';
 import { DebugMarkers } from './scene/DebugMarkers';
 import { JitterProbe } from './scene/JitterProbe';
 import { CtxSwitchProbe, CTX_START } from './scene/CtxSwitchProbe';
+import { M3DescentProbe, M3_START } from './scene/M3DescentProbe';
 import { clock, epochProvider, installTimeGlue, syncClockToNow } from './glue/time';
 import { createGoToCoordinator } from './glue/goto';
-import { testHook, controllerHolder, mirrorControllerState } from './glue/test-hook';
+import { testHook, controllerHolder, mirrorControllerState, streamingHolder } from './glue/test-hook';
+import { makeLocalGroup } from './glue/local-group';
+import { getCosmosPool, createMilkyWayStreaming } from './glue/streaming';
+import { wireQuality } from './glue/quality';
 
 /** TASK-006 debug flythrough scene, behind the query flag only. */
 const DEBUG_MARKERS =
@@ -37,15 +45,21 @@ const DEBUG_JITTER =
 const DEBUG_CTXSWITCH =
   new URLSearchParams(window.location.search).get('debug') === 'ctxswitch';
 
+/** TASK-040 M3 gate (`?debug=m3`): full packs + streaming, scripted universe→Earth zoom. */
+const DEBUG_M3 = new URLSearchParams(window.location.search).get('debug') === 'm3';
+
 const HYG_MANIFEST_URL = '/packs/manifest.json';
 const SOL_PACK_URL = '/packs/systems-sol.json';
 const EXO_PACK_URL = '/packs/systems-exo.json';
+const OCTREE_MANIFEST_URL = '/packs/octree/octree.json';
 
 interface Sources {
   readonly stars: StarDataSource;
   readonly sol: SystemsSource;
   readonly exo: SystemsSource;
   readonly combined: CombinedSource;
+  /** HYG octree (M3 streaming tier); absent in debug modes that don't stream. */
+  readonly octree?: OctreeSource;
 }
 
 type PackState =
@@ -56,6 +70,7 @@ type PackState =
 export function App() {
   if (DEBUG_JITTER) return <JitterApp />;
   if (DEBUG_CTXSWITCH) return <CtxSwitchApp />;
+  if (DEBUG_M3) return <M3App />;
   return DEBUG_MARKERS ? <DebugApp /> : <StarApp />;
 }
 
@@ -153,6 +168,143 @@ function CtxSwitchApp() {
         combined={pack.sources.combined}
         onController={handleController}
         onContextSwitch={handleContextSwitch}
+      />
+      <StarScene
+        stars={pack.sources.stars}
+        combined={pack.sources.combined}
+        origin={origin}
+        controllerRef={controllerHolder}
+      />
+      {mountedSystem ? (
+        <SystemScene
+          system={mountedSystem.system}
+          origin={origin}
+          packUrl={mountedSystem.packUrl}
+          controllerRef={controllerHolder}
+        />
+      ) : null}
+    </SceneHost>
+  );
+}
+
+/**
+ * TASK-040 M3 gate (`?debug=m3`): the signature continuous-zoom acceptance run.
+ * Loads the full M2 packs PLUS the HYG octree, builds the streaming tier + the
+ * procedural Milky Way, and replaces user input with M3DescentProbe — a scripted
+ * universe→galaxy→system descent to an Earth approach. The shipped scenes (star
+ * field, galaxy/streaming tier, system) mount identically to production; only
+ * navigation is scripted and the clock is paused so orbital motion cannot
+ * contaminate the per-frame transition deltas.
+ */
+function M3App() {
+  const [pack, setPack] = useState<PackState>({ status: 'loading' });
+  const [mountedSystemId, setMountedSystemId] = useState<BodyId | null>(null);
+
+  useEffect(() => {
+    installTimeGlue();
+    clock.setPaused(true); // freeze orbits — the probe tests CAMERA transitions.
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      loadStarPack(HYG_MANIFEST_URL),
+      loadSystemsPack(SOL_PACK_URL),
+      loadSystemsPack(EXO_PACK_URL),
+      loadOctreePack(OCTREE_MANIFEST_URL, { pool: getCosmosPool() }),
+    ]).then(
+      ([stars, sol, exo, octree]) => {
+        if (cancelled) return;
+        const combined = createCombinedSource(stars, [sol, exo]);
+        setPack({ status: 'ready', sources: { stars, sol, exo, combined, octree } });
+      },
+      (err: unknown) => {
+        if (!cancelled) {
+          setPack({
+            status: 'error',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    testHook.ready = pack.status === 'ready';
+  }, [pack]);
+
+  const tree = useMemo(() => createScaleFrameTree(), []);
+  const origin = useMemo(() => createOriginManager(tree, M3_START), [tree]);
+  const { milkyWay } = useMemo(() => makeLocalGroup(), []);
+
+  const handleController = useCallback((controller: FlightController) => {
+    controllerHolder.current = controller;
+    mirrorControllerState();
+  }, []);
+
+  const handleContextSwitch = useCallback((e: ContextSwitchEvent) => {
+    setMountedSystemId(e.to === 'system' ? e.anchorId : null);
+    mirrorControllerState();
+  }, []);
+
+  const sources = pack.status === 'ready' ? pack.sources : null;
+
+  const streaming = useMemo<StreamingPolicy | null>(() => {
+    if (sources?.octree === undefined) return null;
+    return createMilkyWayStreaming({ origin, octree: sources.octree, milkyWay });
+  }, [origin, sources, milkyWay]);
+
+  useEffect(() => {
+    streamingHolder.current = streaming;
+    return () => {
+      if (streamingHolder.current === streaming) streamingHolder.current = null;
+    };
+  }, [streaming]);
+
+  const handleQc = useCallback(
+    (qc: QualityController) => {
+      if (streaming === null) return;
+      wireQuality(streaming, (tier) => {
+        testHook.qualityTier = tier;
+      })(qc);
+    },
+    [streaming],
+  );
+
+  const mountedSystem = useMemo(() => {
+    if (sources === null || mountedSystemId === null) return null;
+    const system = sources.sol.getSystem(mountedSystemId) ?? sources.exo.getSystem(mountedSystemId);
+    if (system === undefined) return null;
+    const packUrl =
+      sources.sol.getSystem(mountedSystemId) !== undefined ? SOL_PACK_URL : EXO_PACK_URL;
+    return { system, packUrl };
+  }, [sources, mountedSystemId]);
+
+  if (pack.status !== 'ready' || streaming === null) return null;
+
+  return (
+    <SceneHost
+      epochProvider={epochProvider}
+      initialQualityTier="high"
+      onQualityController={handleQc}
+    >
+      <color attach="background" args={['#02030a']} />
+      <M3DescentProbe
+        origin={origin}
+        tree={tree}
+        combined={pack.sources.combined}
+        milkyWay={milkyWay}
+        onController={handleController}
+        onContextSwitch={handleContextSwitch}
+      />
+      <GalaxyScene
+        streaming={streaming}
+        origin={origin}
+        controllerRef={controllerHolder}
+        milkyWayRadiusPc={milkyWay.radiusKpc * 1000}
       />
       <StarScene
         stars={pack.sources.stars}
@@ -402,6 +554,8 @@ function StarApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // All packs load in parallel at startup (§6 M3: no loading screen between scale
+  // tiers AFTER ready). The octree decodes through the shared worker pool.
   useEffect(() => {
     let cancelled = false;
     setPack({ status: 'loading' });
@@ -409,11 +563,12 @@ function StarApp() {
       loadStarPack(HYG_MANIFEST_URL),
       loadSystemsPack(SOL_PACK_URL),
       loadSystemsPack(EXO_PACK_URL),
+      loadOctreePack(OCTREE_MANIFEST_URL, { pool: getCosmosPool() }),
     ]).then(
-      ([stars, sol, exo]) => {
+      ([stars, sol, exo, octree]) => {
         if (cancelled) return;
         const combined = createCombinedSource(stars, [sol, exo]);
-        setPack({ status: 'ready', sources: { stars, sol, exo, combined } });
+        setPack({ status: 'ready', sources: { stars, sol, exo, combined, octree } });
       },
       (err: unknown) => {
         if (!cancelled) {
@@ -448,6 +603,10 @@ function StarApp() {
   const tree = useMemo(() => createScaleFrameTree(), []);
   const origin = useMemo(() => createOriginManager(tree, INITIAL_CAMERA), [tree]);
 
+  // M3: deterministic local group; the Milky Way is index 0 at the universe origin
+  // and its seed drives the procedural star cloud (§5.6/§5.8).
+  const { milkyWay } = useMemo(() => makeLocalGroup(), []);
+
   // The flight controller is created inside the Canvas (it needs the R3F frame
   // loop); the HUD and glue reach it through the shared holder at event time only.
   const handleController = useCallback((controller: FlightController) => {
@@ -463,6 +622,36 @@ function StarApp() {
   // The goto coordinator (two-leg planet chaining + bookmark restore) needs the
   // combined source; rebuild it when the packs (re)load.
   const sources = pack.status === 'ready' ? pack.sources : null;
+
+  // M3 streaming policy — built once the octree pack is ready, sharing the module
+  // worker pool. Published to the test hook holder for the ≤ 4 Hz stats mirror.
+  const streaming = useMemo<StreamingPolicy | null>(() => {
+    if (sources?.octree === undefined) return null;
+    return createMilkyWayStreaming({ origin, octree: sources.octree, milkyWay });
+  }, [origin, sources, milkyWay]);
+
+  // Publish to the test-hook holder for the ≤ 4 Hz stats mirror. The policy lives
+  // for the app session (like the module worker pool) — StarApp is the root and
+  // never truly unmounts, so we do NOT dispose on a (StrictMode/HMR) fake unmount,
+  // which would tear down the memoized policy and leave a dead reference behind.
+  useEffect(() => {
+    streamingHolder.current = streaming;
+    return () => {
+      if (streamingHolder.current === streaming) streamingHolder.current = null;
+    };
+  }, [streaming]);
+
+  // Adaptive quality: relay the SceneHost tier to the streaming point cap + test
+  // hook (§9). Stable across renders for the same streaming policy.
+  const handleQc = useCallback(
+    (qc: QualityController) => {
+      if (streaming === null) return;
+      wireQuality(streaming, (tier) => {
+        testHook.qualityTier = tier;
+      })(qc);
+    },
+    [streaming],
+  );
   const goto = useMemo(
     () =>
       sources
@@ -521,16 +710,31 @@ function StarApp() {
     <>
       {contextLost ? <ContextLostOverlay /> : null}
       {pack.status === 'ready' ? (
-        <SceneHost onContextLost={handleContextLost} epochProvider={epochProvider}>
+        <SceneHost
+          onContextLost={handleContextLost}
+          epochProvider={epochProvider}
+          initialQualityTier="high"
+          onQualityController={handleQc}
+        >
           <color attach="background" args={['#02030a']} />
           <NavDriver
             origin={origin}
             tree={tree}
             stars={pack.sources.stars}
             combined={pack.sources.combined}
+            streaming={streaming ?? undefined}
+            milkyWay={milkyWay}
             onController={handleController}
             onContextSwitch={handleContextSwitch}
           />
+          {streaming ? (
+            <GalaxyScene
+              streaming={streaming}
+              origin={origin}
+              controllerRef={controllerHolder}
+              milkyWayRadiusPc={milkyWay.radiusKpc * 1000}
+            />
+          ) : null}
           <StarScene
             stars={pack.sources.stars}
             combined={pack.sources.combined}

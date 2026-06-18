@@ -239,7 +239,9 @@ async function waitFlightDone(page: Page): Promise<void> {
 
 declare global {
   interface Window {
-    // Widened in TASK-029 for the M2 hook; M1 reads only the first three fields.
+    // Widened in TASK-029 for the M2 hook and TASK-040 for the M3 streaming/quality
+    // hook; M1 reads only the first three fields. The M3 fields are optional so the
+    // M1/M2 specs are unaffected.
     __cosmos?: {
       ready: boolean;
       goToActive: boolean;
@@ -248,6 +250,13 @@ declare global {
       anchorSystemId: string | null;
       epochJD: number;
       cameraPosition: { context: string; local: [number, number, number] };
+      streaming?: {
+        inFlight: number;
+        loadedChunks: number;
+        renderedPoints: number;
+        drawCalls: number;
+      };
+      qualityTier?: string;
     };
   }
 }

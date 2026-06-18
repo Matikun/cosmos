@@ -1,5 +1,6 @@
-import type { ContextId } from '@cosmos/core-types';
+import type { ContextId, QualityTier } from '@cosmos/core-types';
 import type { FlightController } from '@cosmos/nav';
+import type { StreamingPolicy } from '@cosmos/streaming';
 
 /**
  * E2E/dev test hook (TASK-015 → extended for TASK-029 M2). Event-driven mirrors
@@ -21,6 +22,15 @@ export interface CosmosTestHook {
     readonly context: ContextId;
     readonly local: readonly [number, number, number];
   };
+  /** §5.8 streaming instrumentation (TASK-040), mirrored ≤ 4 Hz from `stats`. */
+  streaming: {
+    inFlight: number;
+    loadedChunks: number;
+    renderedPoints: number;
+    drawCalls: number;
+  };
+  /** Active adaptive quality tier (TASK-040), mirrored from `qc.onChange`. */
+  qualityTier: QualityTier;
 }
 
 export const testHook: CosmosTestHook = {
@@ -31,7 +41,29 @@ export const testHook: CosmosTestHook = {
   anchorSystemId: null,
   epochJD: 2451545.0,
   cameraPosition: { context: 'galaxy', local: [0, 0, 0] },
+  streaming: { inFlight: 0, loadedChunks: 0, renderedPoints: 0, drawCalls: 0 },
+  qualityTier: 'high',
 };
+
+/**
+ * Module-scoped holder for the live streaming policy (created in App once the
+ * octree pack loads). The ≤ 4 Hz display timer reads `stats` through it — never
+ * a frame callback.
+ */
+export const streamingHolder: { current: StreamingPolicy | null } = {
+  current: null,
+};
+
+/** Mirror low-frequency streaming stats into the test hook (≤ 4 Hz, §5.8). */
+export function mirrorStreamingStats(): void {
+  const s = streamingHolder.current;
+  if (!s) return;
+  const st = s.stats;
+  testHook.streaming.inFlight = st.inFlight;
+  testHook.streaming.loadedChunks = st.loadedChunks;
+  testHook.streaming.renderedPoints = st.renderedPoints;
+  testHook.streaming.drawCalls = st.drawCalls;
+}
 
 /**
  * Module-scoped holder for the live flight controller. The controller is created

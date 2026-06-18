@@ -1,14 +1,17 @@
 import { useEffect } from 'react';
-import type { UniversePosition } from '@cosmos/core-types';
+import type { GalaxyRecord, UniversePosition } from '@cosmos/core-types';
+import { CONTEXT_UNIT_METERS } from '@cosmos/core-types';
 import type { OriginManager, ScaleFrameTree } from '@cosmos/coords';
 import type { StarDataSource, CombinedSource } from '@cosmos/data';
 import { PRIORITY_NAV, useFrameContext } from '@cosmos/scene-host';
+import type { StreamingPolicy } from '@cosmos/streaming';
 import {
   useFlightController,
   type FlightController,
   type ContextSwitchEvent,
 } from '@cosmos/nav';
 import { systemFeed } from '../glue/system-feed';
+import { startGalaxyAnchorScan } from '../glue/local-group';
 
 /**
  * Initial camera: in the galaxy star field, ~0.06 pc from Sol — just OUTSIDE the
@@ -26,6 +29,8 @@ export const INITIAL_CAMERA: UniversePosition = {
 const MIN_SURFACE_DISTANCE_PC = 1e-7;
 /** Distance floor (AU) for the system-context surface feed. */
 const MIN_SURFACE_DISTANCE_AU = 1e-9;
+/** Distance floor (Mpc) for the universe-context streaming surface feed. */
+const MIN_SURFACE_DISTANCE_MPC = 1e-9;
 /** Anchor scan cadence — ≤ 10 Hz (never per-frame, §5.8). */
 const ANCHOR_SCAN_MS = 100;
 /**
@@ -43,6 +48,10 @@ interface NavDriverProps {
   readonly stars: StarDataSource;
   /** Combined source for the host-system anchor scan. */
   readonly combined: CombinedSource;
+  /** Streaming policy (M3) — supplies the universe-context nearest-surface scalar. */
+  readonly streaming?: StreamingPolicy | undefined;
+  /** Milky Way anchor record (M3) — enables the universe⇄galaxy anchor scan. */
+  readonly milkyWay?: GalaxyRecord | undefined;
   /** Called once with the live controller so the HUD can issue goTo at event time. */
   onController(controller: FlightController): void;
   /** Forwarded galaxy⇄system context switches (mounts/unmounts the system scene). */
@@ -64,6 +73,8 @@ export function NavDriver({
   tree,
   stars,
   combined,
+  streaming,
+  milkyWay,
   onController,
   onContextSwitch,
 }: NavDriverProps) {
@@ -100,6 +111,15 @@ export function NavDriver({
     return () => clearInterval(id);
   }, [flight, tree, combined]);
 
+  // Universe⇄galaxy anchor scan (M3) — sets the frame-tree 'galaxy' anchor FIRST,
+  // then the nav galaxy anchor (TASK-037 order). One-time once the Milky Way is
+  // anchored; safe in any context since the Milky Way sits at the galaxy frame's
+  // default origin (no positional shift). Only wired when streaming is present.
+  useEffect(() => {
+    if (milkyWay === undefined) return;
+    return startGalaxyAnchorScan(flight, tree, milkyWay);
+  }, [flight, tree, milkyWay]);
+
   useFrameContext(() => {
     const [cx, cy, cz] = flight.state.position.local;
     if (flight.contextId === 'system') {
@@ -114,6 +134,19 @@ export function NavDriver({
         if (d < best) best = d;
       }
       flight.setDistanceToNearestSurface(Math.max(best, MIN_SURFACE_DISTANCE_AU));
+      return;
+    }
+
+    if (flight.contextId === 'universe') {
+      // Universe context (M3) — streaming's nearest loaded-chunk distance, meters
+      // → Mpc. The galaxy/system feeds below stay exactly as M2 (the streaming
+      // scalar is tile-bounds based and collapses to ~0 inside the galaxy octree,
+      // so it must NOT drive the galaxy speed law — §5.8 nearest is for universe).
+      const dM = streaming?.nearestBodyDistanceM ?? Infinity;
+      const units = Number.isFinite(dM) ? dM / CONTEXT_UNIT_METERS.universe : Infinity;
+      if (units !== Infinity) {
+        flight.setDistanceToNearestSurface(Math.max(units, MIN_SURFACE_DISTANCE_MPC));
+      }
       return;
     }
 
