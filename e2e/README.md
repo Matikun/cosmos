@@ -1,57 +1,71 @@
 # @cosmos/e2e
 
 Playwright end-to-end test suite for the Cosmos app. Runs against the **built**
-app (`vite preview`), on Chromium and WebKit. Chromium uses SwiftShader
+app (`vite preview`) on Chromium, WebKit, and Firefox. Chromium uses SwiftShader
 (software GL) for deterministic, headless rendering on CI runners.
 
-## Structure
+## Gate taxonomy (read this before adding assertions)
 
-```
-e2e/
-├── playwright.config.ts        # projects: chromium, webkit
-├── tests/
-│   ├── smoke.spec.ts           # chromium + webkit: load, WebGL2, no errors
-│   ├── flythrough.spec.ts      # chromium only: perf smoke + rebase check
-│   ├── helpers/
-│   │   └── frame-stats.ts      # rAF frame-time + PerformanceObserver helper
-│   └── __screenshots__/        # committed baselines (plain files; Git LFS deferred)
-└── README.md
-```
+Tests fall into three categories. **What blocks CI is deliberately limited to the
+deterministic ones** — see [docs/architecture.md](../docs/architecture.md) and the
+`ci/deterministic-gates` history for the rationale.
+
+| Category | What it asserts | Blocks CI? |
+|---|---|---|
+| **Deterministic — correctness** | context-switch sequences, `finalContext`/`contextId`, selection/UI text, error counts, jitter sub-pixel stability, heap plateau (regression slope), pixel-delta invisibility | **yes** |
+| **Deterministic — work budget** | `streamingPeak.{inFlight ≤ 6, renderedPoints ≤ 2M, drawCalls ≤ 300}`, `requestsIssued`, churn throughput | **yes** |
+| **Visual** | `toHaveScreenshot` — **canvas only**, not full page (the HUD's `backdrop-filter` blur never settles under SwiftShader) | **yes** |
+| **Wall-clock perf** | `p95`/`p50`/`maxFrameMs` ms, `longTasks`, span ms, blank-by-time | **no** — see below |
+
+**Why wall-clock perf does not gate CI:** CI runs on SwiftShader on a CPU-capped
+shared runner, where a frame-time number measures the runner, not the code — a
+*different renderer measuring a different thing*, not a noisy version of the GPU
+number. So those assertions are either guarded behind `if (!process.env.CI)`
+(reference-machine only) or live in `@perf`-tagged tests that CI excludes. The
+numbers are still **logged every run** (`console.log`) for trend. The strict
+timing target is the manual reference-GPU checklist. A real perf regression still
+fails the deterministic gate, because it shows up as more *work submitted*
+(points / draw calls / in-flight) — which is what the budget caps assert.
+
+When you add a test:
+- Pure wall-clock / capture-diagnostic? Tag it `{ tag: '@perf' }`.
+- Mixed (deterministic caps + a timing check in one expensive run)? Keep the caps
+  unconditional and guard the timing with `if (!process.env.CI)` + a `console.log`.
+- Screenshot? Shoot `page.locator('canvas')`, never `page`.
 
 ## Running locally
 
 ```bash
-# Build the app first
-pnpm --filter @cosmos/web build
+pnpm --filter @cosmos/web build          # build first (tests run vite preview)
 
-# Run all tests (starts vite preview automatically)
-pnpm --filter @cosmos/e2e test
-
-# Interactive UI mode
-pnpm --filter @cosmos/e2e test:ui
+pnpm --filter @cosmos/e2e test           # full suite (everything)
+pnpm --filter @cosmos/e2e test:gate      # CI's blocking gate (deterministic only)
+pnpm --filter @cosmos/e2e test:perf      # the @perf wall-clock suite (reference machine)
+pnpm --filter @cosmos/e2e test:ui        # interactive UI mode
 ```
 
 ## Updating baselines
 
-Screenshot baselines are committed to `tests/__screenshots__/`.
+Screenshot baselines are committed to `tests/__screenshots__/` (canvas-only PNGs).
 
-**Always record baselines on CI** (or with the exact same rendering flags as CI)
-to avoid platform DPR / anti-aliasing divergence.
-
-To update baselines locally with matching flags:
+**Record baselines with CI's rendering flags** — the chromium project forces
+`--use-angle=swiftshader`; the 5% `maxDiffPixelRatio` absorbs the win32↔linux
+SwiftShader cross-build AA delta. For maximum fidelity, take the baseline from a
+CI run's artifact (CI is linux); a locally-recorded one is usually within tol.
 
 ```bash
-# Must match CI's SwiftShader flag; run inside chromium with software GL
 pnpm --filter @cosmos/e2e update-baselines
 ```
 
-Commit the updated PNG files and open a PR with the `update-baselines` label so
-reviewers know this is an intentional visual change.
+Commit the updated PNGs and flag the PR as an intentional visual change.
 
 ## CI behaviour
 
-- Chromium: all specs
-- WebKit: `smoke.spec.ts` only (WebGL screenshot assertions are flaky under
-  Linux WebKit's software GL — see TASK-014)
-- Playwright HTML report is uploaded as a CI artifact on failure
-- Bundle-size gate runs after E2E (`pnpm check:bundle`, JS ≤ 1.2 MB gz)
+- **Blocking gate:** `playwright test --grep-invert @perf` (chromium full; webkit
+  + firefox run `smoke` + `flythrough3` only). Wrapped in `xvfb-run` so headless
+  Firefox can negotiate a GL context.
+- **Cold-boot perf gate:** `boot-perf` on chromium (a 1000 ms catastrophic-hang
+  check; `longTasks` is logged, not gated).
+- `@perf` specs are **not** run in CI — run them on the reference machine via
+  `test:perf`.
+- Playwright HTML report uploaded as an artifact on failure.
