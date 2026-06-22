@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { assertAttribution, buildPack, parseSource } from './convert.js';
 import { ConstellationPackSchema } from './schema.js';
@@ -14,12 +15,14 @@ const { values } = parseArgs({
   },
 });
 
-// pnpm changes CWD to the package dir; INIT_CWD is the workspace root.
-const baseCwd = process.env['INIT_CWD'] ?? process.cwd();
+// Resolve the repo root from this file's location rather than INIT_CWD: when
+// turbo invokes `pnpm run build`, pnpm's cwd (and INIT_CWD) is already the
+// package dir, not the workspace root.
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
-const inputPath = resolve(baseCwd, values.input ?? 'tools/pack-constellations/src/constellation-lines.dat');
-const outDir = resolve(baseCwd, values.out ?? 'apps/web/public/packs');
-const attributionsPath = resolve(baseCwd, values.attributions ?? 'ATTRIBUTIONS.md');
+const inputPath = resolve(repoRoot, values.input ?? 'tools/pack-constellations/src/constellation-lines.dat');
+const outDir = resolve(repoRoot, values.out ?? 'apps/web/public/packs');
+const attributionsPath = resolve(repoRoot, values.attributions ?? 'ATTRIBUTIONS.md');
 
 assertAttribution(attributionsPath);
 
