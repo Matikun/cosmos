@@ -59,3 +59,31 @@ export interface DockProps {
   /** Open the bookmarks panel. */
   readonly onOpenBookmarks: () => void;
 }
+
+/** A body label already projected to screen space by the app (ui never sees
+ *  the camera). */
+export interface ProjectedLabel {
+  readonly id: string;
+  readonly text: string;
+  /** Screen-space pixel position (the app computed it from the camera). */
+  readonly xPx: number;
+  readonly yPx: number;
+  /** Lower = more important; the layer shows the most important that fit. */
+  readonly priority: number;
+  /** false ⇒ behind the camera / off-screen; the layer skips it. */
+  readonly visible: boolean;
+}
+
+export interface LabelLayerProps {
+  /** Recomputed by the app at ≤ ~10 Hz (NOT per frame, §5.12) and passed in. */
+  readonly labels: readonly ProjectedLabel[];
+  /** Max labels rendered (de-cluttering); default 24. */
+  readonly maxVisible?: number;
+}
+
+export interface TourChromeProps {
+  /** Called when the user advances/finishes so the app can fly nav to the step. */
+  onStepChange(stepIndex: number): void;
+  /** Called on exit so the app can stop cinematic playback. */
+  onExit(): void;
+}

@@ -517,13 +517,146 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* --- Overlay controls --- */
+
+.cosmos-ui-overlays {
+  pointer-events: auto;
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  z-index: 90;
+  font-size: 0.82rem;
+  background: var(--hud-surface);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--hud-radius);
+  box-shadow: var(--hud-shadow);
+  -webkit-backdrop-filter: blur(var(--hud-blur));
+  backdrop-filter: blur(var(--hud-blur));
+  color: var(--hud-text-dim);
+}
+
+.cosmos-ui-overlays button {
+  background: none;
+  border: 1px solid var(--hud-border);
+  border-radius: var(--hud-radius-sm);
+  color: var(--hud-text-dim);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 4px 8px;
+}
+
+.cosmos-ui-overlays button[aria-pressed='true'] {
+  background: var(--hud-accent-fill);
+  border-color: var(--hud-border-strong);
+  color: var(--hud-text);
+}
+
+/* --- Label layer (screen-space, app-projected) --- */
+
+.cosmos-ui-labels {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.cosmos-ui-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  color: var(--hud-text);
+  font-size: 0.78rem;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+/* --- Guided-tour chrome --- */
+
+.cosmos-ui-tour {
+  pointer-events: auto;
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, 90vw);
+  padding: 16px;
+  z-index: 95;
+  background: var(--hud-surface);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--hud-radius);
+  box-shadow: var(--hud-shadow);
+  -webkit-backdrop-filter: blur(var(--hud-blur));
+  backdrop-filter: blur(var(--hud-blur));
+  color: var(--hud-text-dim);
+}
+
+.cosmos-ui-tour-exit {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--hud-text-faint);
+  cursor: pointer;
+  padding: 4px;
+}
+
+.cosmos-ui-tour-exit:hover {
+  color: var(--hud-text);
+}
+
+.cosmos-ui-tour-title {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--hud-text);
+  padding-right: 24px;
+}
+
+.cosmos-ui-tour-narration {
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.cosmos-ui-tour-controls {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.cosmos-ui-tour-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--hud-border);
+  border-radius: var(--hud-radius-sm);
+  color: var(--hud-text-dim);
+  cursor: pointer;
+  padding: 6px 10px;
+}
+
+.cosmos-ui-tour-controls button:hover:not(:disabled) {
+  background: var(--hud-accent-fill);
+  color: var(--hud-text);
+}
+
+.cosmos-ui-tour-controls button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* --- Keyboard focus (accessibility) --- */
 
 .cosmos-ui-palette :focus-visible,
 .cosmos-ui-info :focus-visible,
 .cosmos-ui-bookmarks :focus-visible,
 .cosmos-ui-bookmarks-toggle:focus-visible,
-.cosmos-ui-dock :focus-visible {
+.cosmos-ui-dock :focus-visible,
+.cosmos-ui-overlays :focus-visible,
+.cosmos-ui-tour :focus-visible {
   outline: 2px solid var(--hud-accent);
   outline-offset: 1px;
   border-radius: var(--hud-radius-sm);

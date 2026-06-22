@@ -66,8 +66,45 @@ These panels use `pointer-events: auto` on their root elements so they capture c
 
 Import `@cosmos/ui/ui.css` in the app entry point for the default panel styles.
 
+## Overlays & tours (Phase 4)
+
+### `OverlayControls`
+
+Subscribes to `useOverlayStore` (`@cosmos/app-state`) itself — no props. Three toggle
+buttons (constellations / labels / cinematic) with `aria-pressed` reflecting store state.
+
+### `LabelLayer`
+
+A screen-space label layer. **`ui` never imports Three.js or sees the camera** — the app
+projects world positions to screen pixels (throttled to ≤ ~10 Hz, not per frame) and passes
+the result in as `ProjectedLabel[]`.
+
+**Props:**
+- `labels: readonly ProjectedLabel[]` — `{ id, text, xPx, yPx, priority, visible }`
+- `maxVisible?: number` — caps rendered labels (default 24)
+
+De-clutters by sorting on `priority` (lower = more important), dropping `visible: false`
+entries, and keeping only the top `maxVisible`. Root has `pointer-events: none` so labels
+never block the canvas.
+
+### `TourChrome`
+
+Title + narration card with play/pause/prev/next/exit, driven entirely by `useTourStore`
+(`@cosmos/app-state`). Renders nothing when no tour is active (`useTourStore.active === null`).
+
+**Props:**
+- `onStepChange(stepIndex: number): void` — called after next/prev so the app can fly nav to
+  the new step
+- `onExit(): void` — called on exit so the app can stop cinematic playback
+
+`TourChrome` only reflects store state and emits these two callbacks — it does not own the
+camera flight (that's the app, via `nav`, per TASK-052).
+
 ## Boundaries
 
-- **No Three.js** — enforced by ESLint (`packages/ui/**` rule).
-- No fetch or `@cosmos/data` imports — all data flows through the injected `BodyLookupAdapter`.
-- No per-frame data — components subscribe only to `useSelectionStore` (low-frequency selection state).
+- **No Three.js** — enforced by ESLint (`packages/ui/**` rule). The app does all world→screen
+  projection for `LabelLayer`; `ui` only ever sees pixel coordinates.
+- No fetch or `@cosmos/data` imports — all data flows through the injected `BodyLookupAdapter`
+  or through `app-state` stores.
+- No per-frame data — `LabelLayer` receives already-throttled props; `TourChrome` and
+  `OverlayControls` react only to store changes.

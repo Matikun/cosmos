@@ -5,6 +5,9 @@ export type {
   TimeControlsProps,
   BookmarksPanelProps,
   DockProps,
+  ProjectedLabel,
+  LabelLayerProps,
+  TourChromeProps,
 } from './types';
 export { SearchPalette } from './SearchPalette';
 export { InfoPanel } from './InfoPanel';
@@ -15,3 +18,6 @@ export { BookmarksPanel } from './BookmarksPanel';
 export { Dock } from './Dock';
 export { Icon, type IconName } from './Icon';
 export { formatEpochJD, formatOrbitalPeriod } from './format';
+export { OverlayControls } from './OverlayControls';
+export { LabelLayer } from './LabelLayer';
+export { TourChrome } from './TourChrome';
