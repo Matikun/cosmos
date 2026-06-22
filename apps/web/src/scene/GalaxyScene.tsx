@@ -68,6 +68,18 @@ const HII_GLOW_COLOR: readonly [number, number, number] = [1.0, 0.35, 0.72];
 // layer fades out (layerFade→0) before the camera gets close enough to blow out.
 const CLOUD_EXPOSURE_BOOST = 4e5;
 
+/**
+ * Distance guard (parsecs from the Milky Way centre) so the heavy 1M-point procgen
+ * cloud is suppressed near Sol / the inner disc REGARDLESS of the coverage signal.
+ * Coverage (ADR-006 §5) is the primary fade, but it is weak with the committed Gaia
+ * *sample* pack and lags while tiles stream in — and drawing the full cloud on top of
+ * the real catalog near home is the §2/§5.8 redundancy + an additive-overdraw perf
+ * trap. Below LO the cloud is off (octree owns the neighbourhood); it ramps to full
+ * by the Milky Way vantage. The retired M3 `GAL_PROCGEN_FLOOR` floor is NOT restored —
+ * near Sol the cloud truly reaches 0.
+ */
+const GAL_FADE_LO_PC = 18_000;
+const GAL_FADE_HI_PC = 45_000;
 /** Cap procgen draw while a breadcrumb goTo is moving — avoids 500k–1M point stalls. */
 const GAL_FLIGHT_DRAW_MAX = 0.2;
 /** Ease draw cap back to full after goTo ends (ms). */
@@ -387,12 +399,22 @@ export function GalaxyScene({
     // Streaming tier: active in universe + galaxy. ADR-006 §5 render-tier unification:
     // inside the galaxy, procgen-cloud opacity = 1 − catalogCoverage(), so the cloud
     // fades to nothing exactly as the real octree (HYG + Gaia) tiles cover the cut —
-    // replacing M3's hard-coded GAL_PROCGEN_FLOOR. At universe scale the impostor +
-    // coarse procgen are KEPT (handoff §3 / ADR-006 table), so no coverage fade there.
+    // replacing M3's hard-coded GAL_PROCGEN_FLOOR. A distance guard ALSO suppresses the
+    // cloud near Sol so the heavy 1M-point cloud never draws on top of the catalog at
+    // home when the coverage signal is weak (sample pack / tiles still loading). At
+    // universe scale the impostor + coarse procgen are KEPT (handoff §3 / ADR-006 table).
     let procgenBlend = 1;
     if (ctx === 'galaxy') {
       const cov = streaming.catalogCoverage();
-      procgenBlend = Math.max(0, Math.min(1, 1 - cov));
+      const coverageFade = Math.max(0, Math.min(1, 1 - cov));
+      if (ctrl) {
+        const p = ctrl.state.position.local;
+        const distFromCenterPc = Math.hypot(p[0], p[1], p[2]);
+        const distanceFade = smoothstep(GAL_FADE_LO_PC, GAL_FADE_HI_PC, distFromCenterPc);
+        procgenBlend = Math.min(coverageFade, distanceFade);
+      } else {
+        procgenBlend = coverageFade;
+      }
     }
     procgenOpacityHolder.current = procgenBlend;
 
