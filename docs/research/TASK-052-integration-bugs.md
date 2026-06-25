@@ -185,7 +185,7 @@ verify before fixing; **needs-measurement** = profile first.
 ---
 
 ## Suggested fix sequencing for the agent(s)
-1. **BUG-3** (z-index + Esc) — small, self-contained, pure chrome/CSS. Quick win.
+1. ~~**BUG-3** (z-index + Esc)~~ — ✅ DONE, shipped in `f8e6d89`.
 2. **BUG-1** (nebula sprite + per-layer UV) — contained to `render-fx` + `glue/nebulae.ts`.
 3. **BUG-5** (per-frame imperative label projection) — touches `Overlays.tsx` + `ui`
    LabelLayer contract; medium.

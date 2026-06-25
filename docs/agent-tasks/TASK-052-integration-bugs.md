@@ -101,8 +101,10 @@ so it can confirm the win.
 - **Suspect area:** TASK-051 cinematic/spline playback + auto-orbit, tour store (TASK-049),
   nav goto context switch interaction.
 
-## BUG-3 — Cinematic view cannot be closed (UI button covered)
-- **Status:** FIXED + verified live (not committed). Two parts:
+## BUG-3 — Cinematic view cannot be closed (UI button covered) — ✅ DONE
+- **Status:** ✅ FIXED + committed (`f8e6d89`), confirmed shipped in code (`ui.css`
+  `.cosmos-ui-overlays` z-index 101 + `App.tsx` Esc handler exits cinematic first). No
+  longer an open bug — kept here only as a record. Two parts:
   1. `.cosmos-ui-overlays` z-index 90→101 (`packages/ui/src/ui.css`) so the controls
      (incl. the "Cinematic" toggle) paint above the letterbox bar.
   2. `Esc` exits the cinematic letterbox first (`apps/web/src/App.tsx` keydown handler).
