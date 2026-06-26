@@ -76,6 +76,21 @@ export interface StreamingStats {
   readonly gpuBytesEstimate: number;
   readonly requestsThisFrame: number;
   readonly cancelledThisFrame: number;
+  /**
+   * BUG-10 diagnostics (additive, read-only — no behaviour change). The levers the
+   * dense-pack streaming wall is bisected against (see
+   * docs/research/bug-10-streaming-density-wall.md):
+   *  - `cutSize`        — chosen cut node count this frame (`targetList.length`).
+   *  - `pendingCount`   — cut chunks awaiting dispatch (queue depth).
+   *  - `trackedChunks`  — total Chunk records resident in the policy (residency).
+   *  - `evictionsTotal` — cumulative chunks evicted since creation (LRU + graceful
+   *    fade-out). Monotonic so a ≤4 Hz sampler can tell "eviction never fired"
+   *    (stays 0 while `loadedChunks` climbs ⇒ Lever 1) from "eviction is keeping up".
+   */
+  readonly cutSize: number;
+  readonly pendingCount: number;
+  readonly trackedChunks: number;
+  readonly evictionsTotal: number;
 }
 
 export interface StreamingPolicy {
@@ -101,6 +116,9 @@ export interface StreamingPolicy {
    * more than a tiny far one. Returns the value as of the last `update()`.
    */
   catalogCoverage(): number;
+
+  /** BUG-10 debug: per-phase ms of the last `update()`. Live object, do not retain. */
+  phaseMs(): { select: number; cancelRequest: number; coverage: number; enforce: number; evictFadeVisible: number; total: number };
 
   dispose(): void;
 }
@@ -157,6 +175,7 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
   let _inFlight = 0;
   let requestsThisFrame = 0;
   let cancelledThisFrame = 0;
+  let evictionsTotal = 0;
   let nearestBodyDistanceM = Infinity;
 
   // ---- per-frame scratch (reused; never reallocated on the steady-state path) ----
@@ -182,11 +201,17 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
     get gpuBytesEstimate() { return _gpuBytes; },
     get requestsThisFrame() { return requestsThisFrame; },
     get cancelledThisFrame() { return cancelledThisFrame; },
+    get cutSize() { return targetList.length; },
+    get pendingCount() { return countPending(); },
+    get trackedChunks() { return chunkList.length; },
+    get evictionsTotal() { return evictionsTotal; },
   };
   let _renderedPoints = 0;
   let _drawCalls = 0;
   let _gpuBytes = 0;
   let _catalogCoverage = 0;
+  // BUG-10 per-phase timing of the last update() (ms). Debug instrumentation.
+  const _phaseMs = { select: 0, cancelRequest: 0, coverage: 0, enforce: 0, evictFadeVisible: 0, total: 0 };
 
   let ctxMeters = CONTEXT_UNIT_METERS[origin.context];
 
@@ -364,6 +389,7 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
 
   /** Graceful eviction (faded out) or hard LRU eviction: emit evict + free. */
   function evictChunk(c: Chunk): void {
+    evictionsTotal++;
     emit('evict', c);
     removeChunk(c);
   }
@@ -490,44 +516,73 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
   // ---------------------------------------------------------------------------
   // budget degradation — drop LOD (collapse to coarser parents) before frames (§9)
   // ---------------------------------------------------------------------------
-  function sumCoveragePoints(): number {
-    let s = 0;
-    for (let i = 0; i < coverageList.length; i++) s += coverageList[i]!.pointCount;
-    return s;
-  }
+  // Collapse-by-level scratch: covered octree nodes bucketed by level for the
+  // deepest-first collapse. Reused across frames (allocation doctrine) — the inner
+  // arrays are length-reset, never reallocated, on a settled cut.
+  const collapseBuckets: Chunk[][] = [];
 
   function enforceBudgets(): void {
     const cap = effectiveMaxPoints(budgets, tier);
-    let guard = 0;
-    while (guard++ < 100000) {
-      const pts = sumCoveragePoints();
-      const over = pts > cap || coverageList.length > budgets.maxDrawCalls;
-      if (!over) break;
 
-      // Collapse the deepest octree coverage node with a ready parent into that parent.
-      let bestIdx = -1;
-      let bestLevel = -1;
-      for (let i = 0; i < coverageList.length; i++) {
-        const c = coverageList[i]!;
-        if (c.kind !== 'octree' || c.level === 0) continue;
-        const pk = parentKey(c.id);
-        if (!pk) continue;
+    // Running totals, maintained incrementally so the whole collapse is O(cut), not
+    // O(cut²). BUG-10: the old per-iteration rescan (`sumCoveragePoints`) + per-element
+    // `parentKey` Morton re-encode in the inner "find deepest" loop was ~99% of frame
+    // time on a dense pack (754-node cut ⇒ ~384 ms/frame). `draws` mirrors the count of
+    // distinct covered nodes (coverageList holds exactly that set; addCoverage dedups).
+    let pts = 0;
+    for (let i = 0; i < coverageList.length; i++) pts += coverageList[i]!.pointCount;
+    let draws = coverageList.length;
+    if (pts <= cap && draws <= budgets.maxDrawCalls) return;
+
+    // Bucket collapsible covered nodes (octree, non-root) by level.
+    let maxLevel = 0;
+    for (let i = 0; i < coverageList.length; i++) {
+      const c = coverageList[i]!;
+      if (c.kind !== 'octree' || c.level === 0) continue;
+      (collapseBuckets[c.level] ??= []).push(c);
+      if (c.level > maxLevel) maxLevel = c.level;
+    }
+
+    // Collapse the deepest covered nodes into their ready parents until within budget.
+    // Each parent is exactly one level shallower, so we enqueue it in its own bucket and
+    // reach it on a later (shallower) pass — identical to the old greedy "deepest
+    // collapsible first", but each node is visited O(1) times (one parentKey per node).
+    for (let level = maxLevel; level >= 1 && (pts > cap || draws > budgets.maxDrawCalls); level--) {
+      const bucket = collapseBuckets[level];
+      if (bucket === undefined) continue;
+      for (let bi = 0; bi < bucket.length && (pts > cap || draws > budgets.maxDrawCalls); bi++) {
+        const child = bucket[bi]!;
+        if (child.coverageEpoch !== frame) continue; // already uncovered
+        const pk = parentKey(child.id);
+        if (pk === null) continue;
         const parent = chunks.get(pk);
-        if (!parent || parent.status !== 'ready') continue;
-        if (c.level > bestLevel) {
-          bestLevel = c.level;
-          bestIdx = i;
+        if (!parent || parent.status !== 'ready') continue; // not collapsible — keep child
+
+        // Uncover the child; collapse its draw + points into the parent.
+        child.coverageEpoch = 0;
+        pts -= child.pointCount;
+        draws--;
+        if (parent.coverageEpoch !== frame) {
+          addCoverage(parent); // coverageEpoch=frame + accessTick; pushes to coverageList
+          pts += parent.pointCount;
+          draws++;
+          (collapseBuckets[parent.level] ??= []).push(parent); // parent.level === level-1
         }
       }
-      if (bestIdx < 0) break; // nothing collapsible — accept the overage
-
-      const child = coverageList[bestIdx]!;
-      const parent = chunks.get(parentKey(child.id)!)!;
-      child.coverageEpoch = 0;
-      const last = coverageList.pop()!;
-      if (last !== child) coverageList[bestIdx] = last;
-      addCoverage(parent);
     }
+
+    // Reset bucket scratch and compact coverageList to the live covered set (drop the
+    // collapsed children) — one O(n) pass, so any later reader sees the truth.
+    for (let l = 1; l <= maxLevel; l++) {
+      const b = collapseBuckets[l];
+      if (b !== undefined) b.length = 0;
+    }
+    let w = 0;
+    for (let i = 0; i < coverageList.length; i++) {
+      const c = coverageList[i]!;
+      if (c.coverageEpoch === frame) coverageList[w++] = c;
+    }
+    coverageList.length = w;
   }
 
   // ---------------------------------------------------------------------------
@@ -543,9 +598,14 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
     targetList.length = 0;
     coverageList.length = 0;
 
+    // BUG-10 phase profiler (additive, debug-only): split update() per phase to find
+    // the dense-pack frame-time sink. `now()` is a no-op cost vs the phases measured.
+    const _t0 = performance.now();
+
     // 1) selection (main-thread visibility)
     selectOctree(viewportHeightPx);
     selectProcgen(viewportHeightPx);
+    const _t1 = performance.now();
 
     // 2) cancel stale in-flight + drop stale pending (camera moved them out of the cut)
     for (let i = chunkList.length - 1; i >= 0; i--) {
@@ -569,9 +629,13 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
       }
     }
 
+    const _t2 = performance.now();
+
     // 4) coverage + budget degradation
     buildCoverage(viewportHeightPx);
+    const _t3 = performance.now();
     enforceBudgets();
+    const _t4 = performance.now();
 
     // 5) LRU eviction once GPU memory exceeds budget (pin cut / coverage / camera node)
     let totalGpu = 0;
@@ -628,11 +692,28 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
       }
     }
     _drawCalls = visible.length;
+
+    const _t5 = performance.now();
+    _phaseMs.select = _t1 - _t0;
+    _phaseMs.cancelRequest = _t2 - _t1;
+    _phaseMs.coverage = _t3 - _t2;
+    _phaseMs.enforce = _t4 - _t3;
+    _phaseMs.evictFadeVisible = _t5 - _t4;
+    _phaseMs.total = _t5 - _t0;
   }
 
   function countReady(): number {
     let n = 0;
     for (let i = 0; i < chunkList.length; i++) if (chunkList[i]!.status === 'ready') n++;
+    return n;
+  }
+
+  function countPending(): number {
+    let n = 0;
+    for (let i = 0; i < chunkList.length; i++) {
+      const s = chunkList[i]!.status;
+      if (s === 'pending' || s === 'inflight') n++;
+    }
     return n;
   }
 
@@ -655,6 +736,7 @@ export function createStreamingPolicy(opts: StreamingPolicyOptions): StreamingPo
     setQualityTier(t) { tier = t; },
     stats,
     catalogCoverage() { return _catalogCoverage; },
+    phaseMs() { return _phaseMs; },
     dispose() {
       if (disposed) return;
       disposed = true;

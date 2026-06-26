@@ -23,12 +23,19 @@ export interface CosmosTestHook {
     readonly context: ContextId;
     readonly local: readonly [number, number, number];
   };
-  /** §5.8 streaming instrumentation (TASK-040), mirrored ≤ 4 Hz from `stats`. */
+  /** §5.8 streaming instrumentation (TASK-040), mirrored ≤ 4 Hz from `stats`.
+   *  cutSize/pendingCount/trackedChunks/evictedThisFrame are the BUG-10 density-wall
+   *  diagnostics (docs/research/bug-10-streaming-density-wall.md). */
   streaming: {
     inFlight: number;
     loadedChunks: number;
     renderedPoints: number;
     drawCalls: number;
+    cutSize: number;
+    pendingCount: number;
+    trackedChunks: number;
+    evictionsTotal: number;
+    phaseMs: { select: number; cancelRequest: number; coverage: number; enforce: number; evictFadeVisible: number; total: number };
   };
   /** Active adaptive quality tier (TASK-040), mirrored from `qc.onChange`. */
   qualityTier: QualityTier;
@@ -63,7 +70,17 @@ export const testHook: CosmosTestHook = {
   anchorSystemId: null,
   epochJD: 2451545.0,
   cameraPosition: { context: 'galaxy', local: [0, 0, 0] },
-  streaming: { inFlight: 0, loadedChunks: 0, renderedPoints: 0, drawCalls: 0 },
+  streaming: {
+    inFlight: 0,
+    loadedChunks: 0,
+    renderedPoints: 0,
+    drawCalls: 0,
+    cutSize: 0,
+    pendingCount: 0,
+    trackedChunks: 0,
+    evictionsTotal: 0,
+    phaseMs: { select: 0, cancelRequest: 0, coverage: 0, enforce: 0, evictFadeVisible: 0, total: 0 },
+  },
   qualityTier: 'high',
   catalogCoverage: 0,
   procgenOpacity: 1,
@@ -104,6 +121,11 @@ export function mirrorStreamingStats(): void {
   testHook.streaming.loadedChunks = st.loadedChunks;
   testHook.streaming.renderedPoints = st.renderedPoints;
   testHook.streaming.drawCalls = st.drawCalls;
+  testHook.streaming.cutSize = st.cutSize;
+  testHook.streaming.pendingCount = st.pendingCount;
+  testHook.streaming.trackedChunks = st.trackedChunks;
+  testHook.streaming.evictionsTotal = st.evictionsTotal;
+  testHook.streaming.phaseMs = s.phaseMs();
   testHook.catalogCoverage = s.catalogCoverage();
   testHook.procgenOpacity = procgenOpacityHolder.current;
   testHook.atmosphereMounted = atmosphereHolder.current;
