@@ -68,6 +68,18 @@ const HII_GLOW_COLOR: readonly [number, number, number] = [1.0, 0.35, 0.72];
 // layer fades out (layerFade→0) before the camera gets close enough to blow out.
 const CLOUD_EXPOSURE_BOOST = 4e5;
 
+// Galaxy catalog-field exposure boost. The global default exposure (25) is tuned for the
+// bright HYG monolith near Sol; measured, it leaves ~98% of the Gaia octree field below the
+// visibility threshold (only ~1.6% / 47k of the 3M pack perceptible) — see
+// docs/research/gaia-visibility-and-realness-problem.md §3. The galaxy field is dominated by
+// faint Gaia stars (90% are mag 10-14), so it needs a higher base sensitivity than the slider
+// nominal. Verified live on the 3M pack: ×4 (effective ~100) reveals the stars but they sit at
+// the dim floor (mag 8.5-10, brightness ~0.01) so the uplift is subtle; effective ~150-200 is
+// where the field "reads as a rich sky". ×6 → effective ~150 at the default slider: Gaia is
+// clearly visible without touching the control, with headroom left on the slider. Bright stars
+// clamp at flux 1 so they do not blow out. The slider stays a relative trim on top of this base.
+const GALAXY_FIELD_EXPOSURE_BOOST = 6;
+
 /**
  * Distance guard (parsecs from the Milky Way centre) so the heavy 1M-point procgen
  * cloud is suppressed near Sol / the inner disc REGARDLESS of the coverage signal.
@@ -123,7 +135,7 @@ function makeOctreeMount(
   const points: StarPoints = createStarPoints({ batch });
   points.object.frustumCulled = false;
   points.setViewportHeight(viewportPx);
-  points.setExposure(exposure);
+  points.setExposure(exposure * GALAXY_FIELD_EXPOSURE_BOOST);
   return {
     chunkId,
     kind: 'octree',
@@ -138,7 +150,7 @@ function makeOctreeMount(
       points.setOpacity(opacity);
     },
     setViewportHeight: (px) => points.setViewportHeight(px),
-    setExposure: (e) => points.setExposure(e),
+    setExposure: (e) => points.setExposure(e * GALAXY_FIELD_EXPOSURE_BOOST),
     // Hard hide via object.visible — additive/multiply opacity 0 does NOT remove a
     // draw (and MultiplyBlending at 0 would darken), so toggle visibility instead.
     hide: () => {
