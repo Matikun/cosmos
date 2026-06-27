@@ -418,9 +418,15 @@ export function GalaxyScene({
     // Distance is the reliable driver here (Sol is the galaxy-frame origin, so
     // distFromCenter is 0 at home and large far out): smoothstep gives procgen OFF near
     // Sol (catalog owns the view) and full far out (impostor + coarse spiral, ADR-006
-    // table). During a goTo flight we keep the conservative coverage∧distance blend +
-    // the GAL_FLIGHT_DRAW_MAX cap, so the near-Sol flight budget (flythrough4 §5.4) is
-    // unchanged; the full spiral resolves once the camera parks at the vantage.
+    // table). Distance drives the opacity DURING a goTo flight too — the old code took
+    // min(coverageFade, distanceFade) while flying, but coverageFade saturates to 0
+    // in-galaxy (cov→1, see above) so that min pinned the spiral to 0 for the WHOLE
+    // breadcrumb flight: the camera flew through the 18–45 kpc band (where distanceFade
+    // is non-zero) rendering black, and the spiral only popped in once it parked
+    // (flying→false). Using distanceFade alone fades the spiral in along the trajectory.
+    // The near-Sol flight budget (flythrough4 §5.4) is still protected: below GAL_FADE_LO_PC
+    // distanceFade is 0, and the GAL_FLIGHT_DRAW_MAX draw cap still applies while flying.
+    // See docs/research/goto-galaxy-transit-black.md.
     let procgenBlend = 1;
     if (ctx === 'galaxy') {
       const cov = streaming.catalogCoverage();
@@ -429,7 +435,7 @@ export function GalaxyScene({
         const p = ctrl.state.position.local;
         const distFromCenterPc = Math.hypot(p[0], p[1], p[2]);
         const distanceFade = smoothstep(GAL_FADE_LO_PC, GAL_FADE_HI_PC, distFromCenterPc);
-        procgenBlend = flying ? Math.min(coverageFade, distanceFade) : distanceFade;
+        procgenBlend = distanceFade;
       } else {
         procgenBlend = coverageFade;
       }
