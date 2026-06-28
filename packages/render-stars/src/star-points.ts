@@ -45,7 +45,10 @@ export function createStarPoints(opts: StarPointsOptions): StarPoints {
   lut.needsUpdate = true;
 
   const uniforms = {
-    uRenderOffset: { value: new THREE.Vector3(0, 0, 0) },
+    // Emulated-double tile-origin offset (see stars.vert.glsl.ts): Hi = f32 round
+    // of the f64 offset, Lo = the residual. Kills sub-AU jitter on close approach.
+    uRenderOffsetHi: { value: new THREE.Vector3(0, 0, 0) },
+    uRenderOffsetLo: { value: new THREE.Vector3(0, 0, 0) },
     uBasePointPx: { value: basePointPx },
     uMinPointPx: { value: minPointPx },
     uMaxPointPx: { value: maxPointPx },
@@ -72,10 +75,20 @@ export function createStarPoints(opts: StarPointsOptions): StarPoints {
     object,
 
     setRenderOffset([x, y, z]: readonly [number, number, number]): void {
-      const v = uniforms.uRenderOffset.value;
-      v.x = x;
-      v.y = y;
-      v.z = z;
+      // Split each f64 component into a f32 high part and its f64 residual, then
+      // store the residual as its own f32. The shader sums (pos + Hi) + Lo so the
+      // per-frame offset no longer re-quantizes to ULP(tile) steps (the jitter).
+      const hi = uniforms.uRenderOffsetHi.value;
+      const lo = uniforms.uRenderOffsetLo.value;
+      const hx = Math.fround(x);
+      const hy = Math.fround(y);
+      const hz = Math.fround(z);
+      hi.x = hx;
+      hi.y = hy;
+      hi.z = hz;
+      lo.x = x - hx;
+      lo.y = y - hy;
+      lo.z = z - hz;
     },
 
     setViewportHeight(px: number): void {

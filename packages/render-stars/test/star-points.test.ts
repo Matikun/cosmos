@@ -72,12 +72,13 @@ describe('geometry layout', () => {
 // ---------------------------------------------------------------------------
 
 describe('shader strings', () => {
-  it('vertex shader contains uRenderOffset', () => {
-    expect(VERT).toContain('uRenderOffset');
+  it('vertex shader contains the emulated-double render offset (hi/lo)', () => {
+    expect(VERT).toContain('uRenderOffsetHi');
+    expect(VERT).toContain('uRenderOffsetLo');
   });
 
   it('vertex shader applies the camera rotation (viewMatrix) to camera-relative positions', () => {
-    expect(VERT).toContain('mat3(viewMatrix) * (position + uRenderOffset)');
+    expect(VERT).toContain('mat3(viewMatrix) * ((position + uRenderOffsetHi) + uRenderOffsetLo)');
   });
 
   it('vertex shader contains the -0.2 size exponent', () => {
@@ -105,32 +106,52 @@ describe('shader strings', () => {
 // ---------------------------------------------------------------------------
 
 describe('setRenderOffset', () => {
-  it('mutates the uniform Vector3 in place (same object identity)', () => {
+  it('mutates the hi/lo uniform Vector3s in place (same object identity)', () => {
     const batch = makeBatch(10);
     const points = createStarPoints({ batch });
     const mat = points.object.material as THREE.ShaderMaterial;
-    const vecBefore = mat.uniforms['uRenderOffset']!.value as THREE.Vector3;
+    const hiBefore = mat.uniforms['uRenderOffsetHi']!.value as THREE.Vector3;
+    const loBefore = mat.uniforms['uRenderOffsetLo']!.value as THREE.Vector3;
 
     points.setRenderOffset([1, 2, 3]);
 
-    const vecAfter = mat.uniforms['uRenderOffset']!.value as THREE.Vector3;
-    expect(vecAfter).toBe(vecBefore); // same object
-    expect(vecAfter.x).toBe(1);
-    expect(vecAfter.y).toBe(2);
-    expect(vecAfter.z).toBe(3);
+    const hiAfter = mat.uniforms['uRenderOffsetHi']!.value as THREE.Vector3;
+    expect(hiAfter).toBe(hiBefore); // same object
+    expect(mat.uniforms['uRenderOffsetLo']!.value).toBe(loBefore);
+    // Exactly representable f32 inputs ⇒ all weight in hi, zero residual.
+    expect(hiAfter.x).toBe(1);
+    expect(hiAfter.y).toBe(2);
+    expect(hiAfter.z).toBe(3);
+    expect(loBefore.x).toBe(0);
+  });
+
+  it('hi + lo reconstructs the f64 offset (residual carries the lost bits)', () => {
+    const batch = makeBatch(10);
+    const points = createStarPoints({ batch });
+    const mat = points.object.material as THREE.ShaderMaterial;
+    const hi = mat.uniforms['uRenderOffsetHi']!.value as THREE.Vector3;
+    const lo = mat.uniforms['uRenderOffsetLo']!.value as THREE.Vector3;
+
+    // A galaxy-scale offset (≈30 pc) whose f64 value is not f32-representable.
+    const x = 30.000000123;
+    points.setRenderOffset([x, 0, 0]);
+
+    expect(hi.x).toBe(Math.fround(x)); // hi = f32 round
+    expect(hi.x + lo.x).toBeCloseTo(x, 12); // hi + lo recovers full precision
+    expect(lo.x).not.toBe(0); // residual actually carries the lost bits
   });
 
   it('second call still uses the same Vector3 identity', () => {
     const batch = makeBatch(10);
     const points = createStarPoints({ batch });
     const mat = points.object.material as THREE.ShaderMaterial;
-    const vec = mat.uniforms['uRenderOffset']!.value as THREE.Vector3;
+    const hi = mat.uniforms['uRenderOffsetHi']!.value as THREE.Vector3;
 
     points.setRenderOffset([4, 5, 6]);
     points.setRenderOffset([7, 8, 9]);
 
-    expect(mat.uniforms['uRenderOffset']!.value).toBe(vec);
-    expect(vec.x).toBe(7);
+    expect(mat.uniforms['uRenderOffsetHi']!.value).toBe(hi);
+    expect(hi.x).toBe(7);
   });
 });
 
