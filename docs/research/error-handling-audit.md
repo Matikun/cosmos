@@ -6,6 +6,17 @@ the plan. This document is the "why"; the task files under `docs/agent-tasks/` a
 
 Status: research complete 2026-06-23. No code changed by this audit.
 
+**Update 2026-06-28 — the "cheap leaf" shipped (`d38c9f8`).** §3.2 (no ErrorBoundary →
+white-screen) and §3.3 (no global handlers) are now CLOSED, plus a WebGL2-capability guard,
+without touching any frozen package: `apps/web/src/glue/report-error.ts` (interim sink +
+`installGlobalErrorHandlers` + `isWebGL2Available`), `apps/web/src/ErrorBoundary.tsx` (root +
+scene boundaries, recoverable card, dev overlay). Verified live (scene throw keeps the HUD
+alive; handlers capture window.error + unhandledrejection). **Still open (the heavier,
+frozen-thaw track — TASK-054…059):** §3.1 streaming `error` lifecycle phase, §3.4 Sentry/prod
+telemetry, §3.5 shared taxonomy, §3.6 dev-assert "scream in dev", §3.7 invariant assertions,
+and the §6/F error gate. The interim sink exposes `window.__cosmosErrors` so that gate can be
+built; the planned `diagnostics` package will subsume `report-error.ts`.
+
 ---
 
 ## 1. The pattern behind our silent bugs
