@@ -13,6 +13,7 @@
  * (identical `originPc` since `centerUnits` is keyed by the shared cell, so no rebasing).
  */
 import type { MortonKey, OctreeManifest, OctreeTileManifest, StarBatch } from '@cosmos/core-types';
+import { decodeMortonKey, encodeMortonKey, parentCell } from '@cosmos/core-types';
 import type { OctreeNode, OctreeSource } from '@cosmos/data';
 
 /** Union of child keys across trees, preserving Morton order and de-duplicating. */
@@ -50,9 +51,89 @@ function mergeNode(key: MortonKey, nodes: readonly OctreeNode[]): OctreeNode {
   return { key, manifest, childKeys: unionChildKeys(nodes) };
 }
 
-/** Concatenate decoded tile batches that share an origin into one batch. */
-function concatBatches(batches: readonly StarBatch[]): StarBatch {
+/**
+ * Push-down (BUG-8 fix, docs/research/bug-8-combine-drops-source.md). When the cut
+ * descends past the level at which a source TERMINATES (its deepest LEAF), that
+ * source's points live in an ancestor node the policy no longer draws — they vanish.
+ * Octree cells partition space, so every point of the leaf ancestor falls into exactly
+ * ONE descendant cut cell. This re-homes the subset of `ancestor`'s points that lie
+ * inside cut cell `cellCenter ± cellHalf`, rebased to the cell's origin so it concatenates
+ * with the owning source's own tile (identical `originPc`, no double draw).
+ */
+function pushDownToCell(
+  ancestor: StarBatch,
+  cellCenter: readonly [number, number, number],
+  cellHalf: number,
+): StarBatch {
+  const n = ancestor.count;
+  const ox = ancestor.originPc[0]!;
+  const oy = ancestor.originPc[1]!;
+  const oz = ancestor.originPc[2]!;
+  // Half-open bounds [c-h, c+h) per axis ⇒ a point on a shared face lands in exactly
+  // one sibling cell (no duplication across the partition).
+  const loX = cellCenter[0] - cellHalf, hiX = cellCenter[0] + cellHalf;
+  const loY = cellCenter[1] - cellHalf, hiY = cellCenter[1] + cellHalf;
+  const loZ = cellCenter[2] - cellHalf, hiZ = cellCenter[2] + cellHalf;
+
+  // Two passes: count survivors, then fill (avoids growing typed arrays).
+  const keep = new Uint32Array(n);
+  let m = 0;
+  for (let i = 0; i < n; i++) {
+    const ax = ox + ancestor.positionsPc[i * 3]!;
+    const ay = oy + ancestor.positionsPc[i * 3 + 1]!;
+    const az = oz + ancestor.positionsPc[i * 3 + 2]!;
+    if (ax >= loX && ax < hiX && ay >= loY && ay < hiY && az >= loZ && az < hiZ) {
+      keep[m++] = i;
+    }
+  }
+
+  const positionsPc = new Float32Array(m * 3);
+  const absMag = new Float32Array(m);
+  const colorIndexBV = new Float32Array(m);
+  const catalogIds = new Uint32Array(m);
+  const hipIds = new Uint32Array(m);
+  for (let j = 0; j < m; j++) {
+    const i = keep[j]!;
+    // Rebase to the cut cell's centre so the pushed points share the cell's originPc.
+    positionsPc[j * 3] = ox + ancestor.positionsPc[i * 3]! - cellCenter[0];
+    positionsPc[j * 3 + 1] = oy + ancestor.positionsPc[i * 3 + 1]! - cellCenter[1];
+    positionsPc[j * 3 + 2] = oz + ancestor.positionsPc[i * 3 + 2]! - cellCenter[2];
+    absMag[j] = ancestor.absMag[i]!;
+    colorIndexBV[j] = ancestor.colorIndexBV[i]!;
+    catalogIds[j] = ancestor.catalogIds[i]!;
+    hipIds[j] = ancestor.hipIds[i]!;
+  }
+  return {
+    count: m,
+    originPc: cellCenter,
+    positionsPc,
+    absMag,
+    colorIndexBV,
+    catalogIds,
+    hipIds,
+    idPrefix: ancestor.idPrefix,
+  };
+}
+
+/** Concatenate decoded tile batches that share an origin into one batch. Empty
+ *  parts (a push-down that re-homed zero points) are dropped first so they neither
+ *  allocate nor disturb the shared `originPc`. */
+function concatBatches(input: readonly StarBatch[]): StarBatch {
+  const batches = input.filter((b) => b.count > 0);
   if (batches.length === 1) return batches[0]!;
+  if (batches.length === 0) {
+    const head = input[0]!; // ≥1 part always passed in; keep its origin/prefix for the empty result.
+    return {
+      count: 0,
+      originPc: head.originPc,
+      positionsPc: new Float32Array(0),
+      absMag: new Float32Array(0),
+      colorIndexBV: new Float32Array(0),
+      catalogIds: new Uint32Array(0),
+      hipIds: new Uint32Array(0),
+      idPrefix: head.idPrefix,
+    };
+  }
   let count = 0;
   for (const b of batches) count += b.count;
   const positionsPc = new Float32Array(count * 3);
@@ -112,6 +193,36 @@ export function combineOctreeSources(sources: readonly OctreeSource[]): OctreeSo
     return merged;
   }
 
+  /** Deepest node `s` actually has on the path from `key` up to the root. The cut may
+   *  sit below where `s` terminates; that terminal node (if a LEAF) is the one whose
+   *  points must be pushed down into `key`. Returns null if `s` has nothing on the path. */
+  function deepestAncestorNode(s: OctreeSource, key: MortonKey): OctreeNode | null {
+    let cell = decodeMortonKey(key);
+    for (;;) {
+      const n = s.getNode(encodeMortonKey(cell));
+      if (n !== undefined) return n;
+      if (cell.level === 0) return null;
+      cell = parentCell(cell);
+    }
+  }
+
+  // Decoded-batch cache (per source+key): a shallow leaf ancestor is shared by many
+  // sibling cut cells, so decode it ONCE (handoff §4 / BUG-8: "fetched once across
+  // sibling cut cells") and filter the cached batch per cell.
+  const decodeCache = new Map<string, Promise<StarBatch>>();
+  function loadCached(s: OctreeSource, si: number, key: MortonKey): Promise<StarBatch> {
+    const ck = `${si}|${key}`;
+    let p = decodeCache.get(ck);
+    if (p === undefined) {
+      // NB: deliberately NOT forwarding the cut cell's AbortSignal — a shared ancestor
+      // must outlive any single cut cell's abort. Per-cell aborts are handled by the
+      // policy discarding the result, not by cancelling the shared fetch.
+      p = s.loadTile(key);
+      decodeCache.set(ck, p);
+    }
+    return p;
+  }
+
   const root = getNode(head.root.key);
   if (root === undefined) throw new Error('combineOctreeSources: missing shared root');
 
@@ -122,9 +233,27 @@ export function combineOctreeSources(sources: readonly OctreeSource[]): OctreeSo
     idPrefix: head.idPrefix,
     getNode,
     async loadTile(key: MortonKey, opts?: { readonly signal?: AbortSignal }): Promise<StarBatch> {
-      const owners = sources.filter((s) => s.getNode(key) !== undefined);
-      if (owners.length === 0) throw new Error(`combineOctreeSources: unknown key ${key}`);
-      const batches = await Promise.all(owners.map((s) => s.loadTile(key, opts)));
+      const cutNode = getNode(key);
+      if (cutNode === undefined) throw new Error(`combineOctreeSources: unknown key ${key}`);
+      const cellCenter = cutNode.manifest.centerUnits;
+      const cellHalf = cutNode.manifest.halfExtentUnits;
+
+      const parts = await Promise.all(
+        sources.map(async (s, si) => {
+          // (a) Source owns this exact cut node → load its own tile.
+          if (s.getNode(key) !== undefined) return s.loadTile(key, opts);
+          // (b) Source terminates above the cut. Push down its deepest LEAF ancestor's
+          //     points (BUG-8). An INTERNAL ancestor means the source pruned its subtree
+          //     toward `key` (only a decimated rep exists) → nothing real to contribute.
+          const anc = deepestAncestorNode(s, key);
+          if (anc === null || !anc.manifest.isLeaf) return null;
+          const ancBatch = await loadCached(s, si, anc.key);
+          return pushDownToCell(ancBatch, cellCenter, cellHalf);
+        }),
+      );
+
+      const batches = parts.filter((b): b is StarBatch => b !== null);
+      if (batches.length === 0) throw new Error(`combineOctreeSources: unknown key ${key}`);
       return concatBatches(batches);
     },
   };
