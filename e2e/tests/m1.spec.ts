@@ -202,8 +202,16 @@ function findEmptySkyPx(pack: Pack, cam: CameraModel): { x: number; y: number } 
         add(add(scale(cam.right, gx * TAN_X), scale(cam.up, gy * TAN_Y)), cam.fwd),
       );
       const { x, y } = projectToPx(cam, dir);
-      if (x < 340 && y < 140) continue; // HUD title panel
-      if (x > 940 && y < 420) continue; // info panel
+      // Avoid every HUD region as FULL-WIDTH bands, not text-width boxes: the
+      // breadcrumb nav ("◂ Milky Way › … › <target>") and time-control toolbar
+      // render WIDER on CI's Linux SwiftShader/Skia than on a dev machine (different
+      // font build — see playwright.config.ts), so a tight x-box that clears the
+      // breadcrumb locally can sit under it on CI and the click hits chrome instead
+      // of the canvas → no deselect. Reserve generous top/bottom strips + the
+      // info-panel corner; the Betelgeuse vantage has ample empty sky in the centre.
+      if (y < 150) continue; // top: title panel + breadcrumb nav (full width)
+      if (y > 560) continue; // bottom: time-control toolbar (full width)
+      if (x > 900 && y < 470) continue; // info panel (top-right)
       const { angle } = nearestTwoAngles(pack, cam.camPos, dir);
       if (angle > best.angle) best = { angle, x, y };
     }
@@ -212,6 +220,11 @@ function findEmptySkyPx(pack: Pack, cam: CameraModel): { x: number; y: number } 
     best.angle,
     'an in-frustum empty-sky direction must clear the pick cone with margin',
   ).toBeGreaterThan(PICK_MAX_ANGLE_RAD + 0.005);
+  // Logged so a CI-only pick miss is triagable without a rerun (which HUD-free px
+  // was clicked, and its clearance from the nearest star).
+  console.log(
+    `[m1 empty-sky] px=(${best.x.toFixed(0)},${best.y.toFixed(0)}) clearance=${best.angle.toFixed(4)}rad`,
+  );
   return best;
 }
 
