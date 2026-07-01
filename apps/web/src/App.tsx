@@ -16,6 +16,7 @@ import {
 import type { FlightController, ContextSwitchEvent } from '@cosmos/nav';
 import { SceneHost, type QualityController } from '@cosmos/scene-host';
 import type { StreamingPolicy } from '@cosmos/streaming';
+import { reportError } from '@cosmos/diagnostics';
 import {
   useSelectionStore,
   useHistoryStore,
@@ -1738,18 +1739,24 @@ function StarApp() {
   // Fly the camera to a tour step: a cinematic spline frames the target, then (if the
   // step requests it) auto-orbits during the dwell (nav v5, §5.3). Splines carry
   // UniversePositions so the path survives a context switch.
+  // Returns true once the cinematic flight was actually started. Callers that fire on the
+  // tour's inactive→active transition retry on false: the flight controller mounts inside
+  // the R3F Canvas (handleController) asynchronously and is NOT gated by `ready` (data pack
+  // only), so under CI SwiftShader contention a tour can go active a beat before the
+  // controller exists. A single fire-and-drop then silently skipped the whole cinematic —
+  // the m4a flake. See docs/research/m4a-tour-cinematic-flake-rootcause.md.
   const flyToStep = useCallback(
-    (stepIndex: number) => {
+    (stepIndex: number): boolean => {
       const ctrl = controllerHolder.current;
       const tour = useTourStore.getState().active;
       if (ctrl === null || tour === null || stepIndex < 0 || stepIndex >= tour.steps.length) {
-        return;
+        return false;
       }
       const step = tour.steps[stepIndex]!;
       const target = resolveTargetUP(step.targetId);
-      if (target === null) return;
+      if (target === null) return false;
       const pos = ctrl.state.position;
-      if (pos.context !== target.context) return; // tour flies at galaxy scale
+      if (pos.context !== target.context) return false; // tour flies at galaxy scale
       const from: UniversePosition = {
         context: pos.context,
         local: [pos.local[0], pos.local[1], pos.local[2]],
@@ -1764,6 +1771,7 @@ function StarApp() {
           }
         },
       });
+      return true;
     },
     [resolveTargetUP],
   );
@@ -1774,14 +1782,45 @@ function StarApp() {
 
   // Drive step-0 flight when the tour STARTS (next/prev flights come from TourChrome's
   // onStepChange → flyToStep, so we only act on the inactive→active transition here to
-  // avoid double-firing).
+  // avoid double-firing). The flight is RETRIED until it engages: the controller mounts
+  // async (handleController, inside the Canvas) and isn't gated by `ready`, so on a slow
+  // (contended CI SwiftShader) boot the tour can go active before the controller exists.
+  // Retrying until flyToStep succeeds — instead of firing once and dropping the cinematic
+  // silently — is the root-cause fix for the m4a tour flake; a true failure (controller
+  // never mounts within the budget) is surfaced via reportError, not swallowed.
   useEffect(() => {
+    const START_TIMEOUT_MS = 10_000;
+    const RETRY_MS = 50;
     let wasActive = useTourStore.getState().active !== null;
-    return useTourStore.subscribe((s) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const startStepFlight = (stepIndex: number): void => {
+      const deadline = performance.now() + START_TIMEOUT_MS;
+      const attempt = (): void => {
+        if (useTourStore.getState().active === null) return; // tour exited before it engaged
+        if (flyToStep(stepIndex)) return; // cinematic started
+        if (performance.now() > deadline) {
+          reportError(
+            new Error(`tour flight to step ${stepIndex} never engaged (controller/target not ready)`),
+            'invariant',
+            { where: 'App.startStepFlight' },
+          );
+          return;
+        }
+        timer = setTimeout(attempt, RETRY_MS);
+      };
+      attempt();
+    };
+
+    const unsub = useTourStore.subscribe((s) => {
       const isActive = s.active !== null;
-      if (isActive && !wasActive) flyToStep(s.stepIndex);
+      if (isActive && !wasActive) startStepFlight(s.stepIndex);
       wasActive = isActive;
     });
+    return () => {
+      unsub();
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, [flyToStep]);
 
   // Dev/E2E control surface: deterministic tier override + tour start/stop. `qcRef` is
